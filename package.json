@@ -1,0 +1,34 @@
+{
+  "name": "solist",
+  "version": "0.0.0",
+  "description": "Solo orchestration CLI powered by Pi.",
+  "type": "module",
+  "bin": {
+    "solist": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm test",
+    "solist": "node dist/cli.js",
+    "prepare": "npm run build"
+  },
+  "dependencies": {
+    "@mariozechner/pi-coding-agent": "^0.73.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT"
+}
