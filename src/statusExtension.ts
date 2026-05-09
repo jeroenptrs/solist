@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { SOLIST_MODEL_PATTERN, SOLIST_THINKING_LEVEL } from "./solistPrompt.js";
 import { SOLIST_ALLOWED_TOOLS } from "./orchestratorPolicy.js";
 

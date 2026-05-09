@@ -3,7 +3,16 @@ export const SOLIST_MCP_TOOL = "mcp" as const;
 export const SOLIST_ALLOWED_TOOLS = [...SOLIST_LOCAL_READ_ONLY_TOOLS, SOLIST_MCP_TOOL] as const;
 export const SOLIST_DEFAULT_MCP_ALLOWLIST = ["solo"] as const;
 export const SOLIST_MCP_ALLOWLIST_ENV = "SOLIST_MCP_ALLOWLIST";
+export const SOLIST_HARDENING_FLAGS = [
+  "--no-extensions",
+  "--no-skills",
+  "--no-prompt-templates",
+  "--no-themes",
+  "--no-context-files"
+] as const;
 
+// -nc is Pi's short flag for --no-context-files (disable AGENTS.md/CLAUDE.md discovery),
+// not an unrelated option like --no-color.
 const ORCHESTRATOR_BLOCKED_FLAGS = [
   "--tools",
   "--no-tools",
@@ -11,6 +20,17 @@ const ORCHESTRATOR_BLOCKED_FLAGS = [
   "--extensions",
   "--no-extensions",
   "--mcp-config",
+  "--extension",
+  "-e",
+  "--skill",
+  "--no-skills",
+  "--prompt-template",
+  "--no-prompt-templates",
+  "--theme",
+  "--no-themes",
+  "--context-files",
+  "--no-context-files",
+  "-nc",
   "-t",
   "-nt",
   "-nbt"
@@ -44,7 +64,18 @@ export function resolveSoloMcpAllowlist(rawAllowlist = process.env[SOLIST_MCP_AL
 
 export function assertNoPolicyToolOverrides(rawArgs: readonly string[]): void {
   const blocked: string[] = [];
-  const flagsWithValues = new Set(["--tools", "-t", "--extensions", "--mcp-config"]);
+  const flagsWithValues = new Set([
+    "--tools",
+    "-t",
+    "--extensions",
+    "--extension",
+    "-e",
+    "--mcp-config",
+    "--skill",
+    "--prompt-template",
+    "--theme",
+    "--context-files"
+  ]);
 
   for (let index = 0; index < rawArgs.length; index += 1) {
     const arg = rawArgs[index];
@@ -63,6 +94,36 @@ export function assertNoPolicyToolOverrides(rawArgs: readonly string[]): void {
     }
 
     if (arg.startsWith("--extensions=") || arg.startsWith("--mcp-config=")) {
+      blocked.push(arg);
+      continue;
+    }
+
+    if (arg.startsWith("--extension=")) {
+      blocked.push(arg);
+      continue;
+    }
+
+    if (arg.startsWith("-e=")) {
+      blocked.push(arg);
+      continue;
+    }
+
+    if (arg.startsWith("--skill=")) {
+      blocked.push(arg);
+      continue;
+    }
+
+    if (arg.startsWith("--prompt-template=")) {
+      blocked.push(arg);
+      continue;
+    }
+
+    if (arg.startsWith("--theme=")) {
+      blocked.push(arg);
+      continue;
+    }
+
+    if (arg.startsWith("--context-files=")) {
       blocked.push(arg);
       continue;
     }

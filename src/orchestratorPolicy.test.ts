@@ -39,6 +39,36 @@ describe("orchestrator policy validation", () => {
     expect(() => assertNoPolicyToolOverrides(["--extensions", "/tmp/ext.js"])).toThrowError(
       "Disallowed orchestrator runtime flags"
     );
+    expect(() => assertNoPolicyToolOverrides(["--no-extensions"])).toThrowError(
+      "Disallowed orchestrator runtime flags"
+    );
+    expect(() => assertNoPolicyToolOverrides(["-e", "./ext.ts"])).toThrowError(
+      "Disallowed orchestrator runtime flags"
+    );
+    expect(() => assertNoPolicyToolOverrides(["--no-skills"])).toThrowError(
+      "Disallowed orchestrator runtime flags"
+    );
+    expect(() => assertNoPolicyToolOverrides(["--no-prompt-templates"])).toThrowError(
+      "Disallowed orchestrator runtime flags"
+    );
+    expect(() => assertNoPolicyToolOverrides(["--no-themes"])).toThrowError(
+      "Disallowed orchestrator runtime flags"
+    );
+    expect(() => assertNoPolicyToolOverrides(["--no-context-files"])).toThrowError(
+      "Disallowed orchestrator runtime flags"
+    );
+    expect(() => assertNoPolicyToolOverrides(["--context-files", "./agents.md"])).toThrowError(
+      "Disallowed orchestrator runtime flags"
+    );
+    expect(() => assertNoPolicyToolOverrides(["--skill", "./skill.ts"])).toThrowError(
+      "Disallowed orchestrator runtime flags"
+    );
+    expect(() => assertNoPolicyToolOverrides(["--prompt-template", "./template.md"])).toThrowError(
+      "Disallowed orchestrator runtime flags"
+    );
+    expect(() => assertNoPolicyToolOverrides(["--theme", "./theme.ts"])).toThrowError(
+      "Disallowed orchestrator runtime flags"
+    );
   });
 
   it("allows non-policy CLI args", () => {

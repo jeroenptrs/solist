@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "description": "Solo orchestration CLI powered by Pi.",
   "type": "module",
+  "packageManager": "pnpm@10.32.1",
   "bin": {
     "solist": "./dist/cli.js"
   },
@@ -15,12 +16,15 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "check": "npm run typecheck && npm test",
+    "check": "pnpm run typecheck && pnpm test",
     "solist": "node dist/cli.js",
-    "prepare": "npm run build"
+    "prepare": "pnpm run build"
   },
   "dependencies": {
-    "@mariozechner/pi-coding-agent": "^0.73.0"
+    "@earendil-works/pi-agent-core": "^0.74.0",
+    "@earendil-works/pi-ai": "^0.74.0",
+    "@earendil-works/pi-coding-agent": "^0.74.0",
+    "@earendil-works/pi-tui": "^0.74.0"
   },
   "devDependencies": {
     "@types/node": "^22.15.3",
