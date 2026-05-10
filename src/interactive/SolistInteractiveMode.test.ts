@@ -51,15 +51,27 @@ class FakeTerminal implements Terminal {
 	}
 }
 
-function createHarness(options: { close?: () => void | Promise<void> } = {}): SolistInteractiveHarness {
+function createHarness(options: {
+	authPath?: string;
+	close?: () => void | Promise<void>;
+	logout?: (provider: string) => Promise<void> | void;
+	getProviderName?: (provider: string) => Promise<string> | string;
+} = {}): SolistInteractiveHarness {
 	return {
 		messages: [] satisfies AgentMessage[],
 		tools: [],
 		modelRef: { provider: "openai-codex", model: "gpt-5.5" },
 		thinkingLevel: "off" as ThinkingLevel,
 		isStreaming: false,
+		authPath: options.authPath,
 		async run() {},
 		abort() {},
+		async logout(provider: string) {
+			await options.logout?.(provider);
+		},
+		async getProviderName(provider: string) {
+			return options.getProviderName?.(provider) ?? provider;
+		},
 		close: options.close,
 		subscribe(_listener: (event: AgentEvent, signal: AbortSignal) => Promise<void> | void) {
 			return () => {};
@@ -158,6 +170,32 @@ describe("SolistInteractiveMode", () => {
 		await done;
 		expect(terminal.stopped).toBe(true);
 		expect(closed).toBe(true);
+	});
+
+	it("handles Solist-owned /logout without sending it to the model", async () => {
+		const terminal = new FakeTerminal();
+		const loggedOut: string[] = [];
+		const mode = new SolistInteractiveMode(createHarness({
+			authPath: "/tmp/solist-auth.json",
+			logout: (provider) => {
+				loggedOut.push(provider);
+			},
+			getProviderName: () => "ChatGPT Plus/Pro (Codex Subscription)",
+		}), {
+			terminal,
+			showWelcome: false,
+		});
+
+		const done = mode.run();
+		terminal.send("/logout\r");
+		await waitForRender();
+
+		expect(loggedOut).toEqual(["openai-codex"]);
+		expect(terminal.output).toContain("Logged out of ChatGPT Plus/Pro");
+		expect(terminal.output).toContain("/tmp/solist-auth.json");
+
+		terminal.send("/exit\r");
+		await done;
 	});
 
 	it("renders user turns as unlabeled full-width background blocks", async () => {

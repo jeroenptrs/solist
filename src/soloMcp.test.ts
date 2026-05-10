@@ -20,7 +20,7 @@ describe("solo MCP runtime config", () => {
     const cwd = join(tempDir, "project");
 
     mkdirSync(cwd, { recursive: true });
-    writeJson(join(homeDir, ".pi", "agent", "mcp.json"), {
+    writeJson(join(homeDir, ".solist", "mcp.json"), {
       settings: {
         disableProxyTool: true,
         directTools: true
@@ -56,7 +56,7 @@ describe("solo MCP runtime config", () => {
     const cwd = join(tempDir, "project");
 
     mkdirSync(cwd, { recursive: true });
-    writeJson(join(homeDir, ".pi", "agent", "mcp.json"), {
+    writeJson(join(homeDir, ".solist", "mcp.json"), {
       mcpServers: {
         solo: {
           command: "/Applications/Solo.app/Contents/MacOS/mcp"
@@ -84,7 +84,7 @@ describe("solo MCP runtime config", () => {
     const cwd = join(tempDir, "project");
 
     mkdirSync(cwd, { recursive: true });
-    writeJson(join(homeDir, ".pi", "agent", "mcp.json"), {
+    writeJson(join(homeDir, ".solist", "mcp.json"), {
       mcpServers: {
         solo: {
           command: "/Applications/Solo.app/Contents/MacOS/mcp",
@@ -100,6 +100,6 @@ describe("solo MCP runtime config", () => {
     };
 
     expect(written.mcpServers.solo.lifecycle).toBe("eager");
-    expect(result.sourcePaths).toEqual([join(homeDir, ".pi", "agent", "mcp.json")]);
+    expect(result.sourcePaths).toEqual([join(homeDir, ".solist", "mcp.json")]);
   });
 });

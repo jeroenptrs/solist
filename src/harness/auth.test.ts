@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { createSolistApiKeyResolver } from "./auth.js";
 
 describe("createSolistApiKeyResolver", () => {
-	it("resolves stored Pi auth credentials for the pinned Codex provider", async () => {
+	it("resolves stored Solist auth credentials for the pinned Codex provider", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "solist-auth-test-"));
 		const authPath = join(tempDir, "auth.json");
 		writeFileSync(authPath, JSON.stringify({

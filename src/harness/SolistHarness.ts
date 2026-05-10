@@ -11,10 +11,15 @@ import {
 	streamSimple,
 	type Api,
 	type Model,
+	type OAuthLoginCallbacks,
 } from "@earendil-works/pi-ai";
 import { buildSolistSystemPrompt } from "../solistPrompt.js";
+import { getSolistAuthPath } from "../solistPaths.js";
 import {
 	createSolistApiKeyResolver,
+	getSolistOAuthProviderName,
+	loginSolistProvider,
+	logoutSolistProvider,
 	type SolistApiKeyResolver,
 } from "./auth.js";
 
@@ -90,6 +95,10 @@ export class SolistHarness {
 		return this.agent.state.thinkingLevel;
 	}
 
+	get authPath(): string {
+		return getSolistAuthPath();
+	}
+
 	get isStreaming(): boolean {
 		return this.agent.state.isStreaming;
 	}
@@ -117,6 +126,18 @@ export class SolistHarness {
 	async close(): Promise<void> {
 		this.closePromise ??= this.closeOnce();
 		await this.closePromise;
+	}
+
+	async login(provider: string, callbacks: OAuthLoginCallbacks): Promise<void> {
+		await loginSolistProvider(provider, callbacks);
+	}
+
+	async logout(provider: string): Promise<void> {
+		await logoutSolistProvider(provider);
+	}
+
+	async getProviderName(provider: string): Promise<string> {
+		return getSolistOAuthProviderName(provider);
 	}
 
 	private async closeOnce(): Promise<void> {

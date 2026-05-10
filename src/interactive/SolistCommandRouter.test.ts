@@ -50,6 +50,8 @@ describe("SolistCommandRouter", () => {
 			expect.objectContaining({ name: "clear", description: expect.any(String) }),
 			expect.objectContaining({ name: "tools", description: expect.any(String) }),
 			expect.objectContaining({ name: "status", description: expect.any(String) }),
+			expect.objectContaining({ name: "login", description: expect.any(String) }),
+			expect.objectContaining({ name: "logout", description: expect.any(String) }),
 		]);
 		expect(SOLIST_INTERACTIVE_COMMANDS.map((command) => command.name)).not.toContain("quit");
 		for (const command of SOLIST_INTERACTIVE_COMMANDS) {
@@ -62,9 +64,23 @@ describe("SolistCommandRouter", () => {
 		expect(isExactSolistInteractiveCommand("/quit")).toBe(true);
 		expect(isExactSolistInteractiveCommand("quit")).toBe(true);
 		expect(isExactSolistInteractiveCommand("/status")).toBe(true);
+		expect(isExactSolistInteractiveCommand("/login")).toBe(true);
+		expect(isExactSolistInteractiveCommand("/logout")).toBe(true);
 		expect(isExactSolistInteractiveCommand("/sta")).toBe(false);
 		expect(isExactSolistInteractiveCommand("/status now")).toBe(false);
+		expect(isExactSolistInteractiveCommand("/login openai-codex")).toBe(false);
 		expect(isExactSolistInteractiveCommand("/model")).toBe(false);
+	});
+
+	it("routes Solist-owned auth commands", () => {
+		expect(routeSolistInteractiveInput("/login", context)).toEqual({
+			kind: "login",
+			provider: undefined,
+		});
+		expect(routeSolistInteractiveInput("/logout openai-codex", context)).toEqual({
+			kind: "logout",
+			provider: "openai-codex",
+		});
 	});
 
 	it("rejects Pi commands and shell mode at the Solist boundary", () => {

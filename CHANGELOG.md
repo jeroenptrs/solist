@@ -7,7 +7,8 @@
 - **Interactive Chat**: Added a persistent terminal chat for the default harness path so Solo can keep the orchestrator process alive and send follow-up commands to the same agent context.
 - **TUI Chat Source Path**: Moved the interactive chat implementation into source, backed by `@earendil-works/pi-tui`, with visible assistant streaming, tool-call lifecycle rendering, interrupts, and a small Solist-owned command router.
 - **Interactive TUI Controls**: Added Pi-style `/` command overview autocomplete, deterministic `/exit` / `/quit` shutdown, and a status line with model, reasoning, message/tool counts, Solo MCP availability, cwd, and active state.
-- **Codex Auth Resolution**: The harness now resolves stored Pi Codex credentials through Pi auth storage, including OAuth refresh, instead of relying on environment-variable lookup only.
+- **Codex Auth Resolution**: The harness now resolves stored Solist Codex credentials from `~/.solist/auth.json` through Pi's auth storage primitives, including OAuth refresh, instead of relying on environment-variable lookup only.
+- **Solist Auth Commands**: Added Solist-owned `/login` and `/logout` commands for the pinned `openai-codex` provider.
 - **Read-Only Tools**: Implemented native read-only filesystem tools (`read`, `ls`, `find`, `grep`) within the harness to eliminate full SDK dependencies and enforce strict access boundaries.
 - **Direct Solo MCP Integration**: Added `SoloMcpDirect` for low-level, high-performance communication with Solo MCP, bypassing the generic MCP proxy for core operations.
 - **Hardening Stopgap**: Implemented orchestrator policy enforcement, including blocked runtime flags and Solo-only MCP allowlisting, to ensure session integrity during the transition.
@@ -37,4 +38,4 @@
 ### Documentation
 - Added comprehensive README with purpose, installation, and v1 target boundaries.
 - Linked Solo scratchpad `solo://proj/11/scratchpad/solo-orchestration-a--50` for living design specs.
-- Documented global installation, Pi auth requirements, Pi MCP adapter setup, and Solo MCP startup behavior.
+- Documented global installation, Solist auth requirements, Pi MCP adapter setup, and Solo MCP startup behavior.

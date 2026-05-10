@@ -52,6 +52,7 @@ Compatibility:
   ${SOLIST_LEGACY_WRAPPER_FLAG} or ${SOLIST_LEGACY_WRAPPER_ENV}=1 selects the temporary legacy wrapper fallback.
 
 The default harness forces ${SOLIST_MODEL_PATTERN} with ${SOLIST_THINKING_LEVEL} reasoning, Solist-owned read-only local tools, and explicit Solo MCP tools.
+Interactive mode supports /login and /logout for Solist-owned Codex credentials in ~/.solist/auth.json.
 The default path does not call the Pi coding-agent main() wrapper.`;
 }
 

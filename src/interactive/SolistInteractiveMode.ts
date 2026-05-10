@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { basename } from "node:path";
 import type {
 	AgentEvent,
@@ -5,7 +6,11 @@ import type {
 	AgentTool,
 	ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
-import type { AssistantMessageEvent } from "@earendil-works/pi-ai";
+import type {
+	AssistantMessageEvent,
+	OAuthLoginCallbacks,
+	OAuthSelectPrompt,
+} from "@earendil-works/pi-ai";
 import {
 	Container,
 	Editor,
@@ -23,6 +28,8 @@ import {
 	type MarkdownTheme,
 	type Terminal,
 } from "@earendil-works/pi-tui";
+import { SOLIST_MODEL_PROVIDER } from "../solistPrompt.js";
+import { getSolistAuthPath } from "../solistPaths.js";
 import {
 	isExactSolistInteractiveCommand,
 	routeSolistInteractiveInput,
@@ -36,8 +43,12 @@ export interface SolistInteractiveHarness {
 	readonly modelRef: { provider: string; model: string };
 	readonly thinkingLevel: ThinkingLevel;
 	readonly isStreaming: boolean;
+	readonly authPath?: string;
 	run(prompt: string): Promise<unknown>;
 	abort(): void;
+	login?(provider: string, callbacks: OAuthLoginCallbacks): Promise<void>;
+	logout?(provider: string): Promise<void>;
+	getProviderName?(provider: string): Promise<string>;
 	close?(): void | Promise<void>;
 	subscribe(
 		listener: (event: AgentEvent, signal: AbortSignal) => Promise<void> | void,
@@ -67,6 +78,9 @@ export class SolistInteractiveMode {
 	private activeTurn = false;
 	private interruptRequested = false;
 	private stopped = false;
+	private activeAuth = false;
+	private activeAuthAbort?: AbortController;
+	private activeAuthInput?: AuthInputWaiter;
 	private currentAssistant?: {
 		text: string;
 		component: Markdown;
@@ -92,6 +106,14 @@ export class SolistInteractiveMode {
 		this.setupLayout();
 		this.unsubscribe = this.harness.subscribe((event) => this.renderEvent(event));
 		this.ui.addInputListener((data) => {
+			if (matchesKey(data, "ctrl+c") && this.activeAuth) {
+				this.cancelActiveAuth();
+				return { consume: true };
+			}
+			if (matchesKey(data, "escape") && this.activeAuth) {
+				this.cancelActiveAuth();
+				return { consume: true };
+			}
 			if (matchesKey(data, "ctrl+c")) {
 				this.handleInterruptOrExit();
 				return { consume: true };
@@ -145,6 +167,11 @@ export class SolistInteractiveMode {
 	}
 
 	private async handleSubmit(input: string): Promise<void> {
+		if (this.activeAuthInput) {
+			this.resolveActiveAuthInput(input);
+			return;
+		}
+
 		const route = routeSolistInteractiveInput(input, this.getCommandContext());
 		if (route.kind === "empty") return;
 		if (route.kind === "exit") {
@@ -162,6 +189,14 @@ export class SolistInteractiveMode {
 		}
 		if (route.kind === "render") {
 			this.addSystemMessage(route.message);
+			return;
+		}
+		if (route.kind === "login") {
+			await this.handleLoginCommand(route.provider);
+			return;
+		}
+		if (route.kind === "logout") {
+			await this.handleLogoutCommand(route.provider);
 			return;
 		}
 		await this.submitPrompt(route.prompt);
@@ -224,6 +259,189 @@ export class SolistInteractiveMode {
 			},
 			tools: this.harness.tools,
 		};
+	}
+
+	private async handleLoginCommand(providerArg?: string): Promise<void> {
+		const provider = this.resolvePinnedAuthProvider(providerArg, "/login");
+		if (!provider) return;
+		if (this.activeTurn) {
+			this.addSystemMessage("Wait for the current turn to finish before logging in.");
+			return;
+		}
+		if (this.activeAuth) {
+			this.addSystemMessage("Authentication is already in progress.");
+			return;
+		}
+		if (!this.harness.login) {
+			this.addSystemMessage("This Solist harness does not expose login support.");
+			return;
+		}
+
+		const authPath = this.getAuthPath();
+		let providerName = provider;
+		try {
+			providerName = await this.getProviderName(provider);
+		} catch (error) {
+			this.addSystemMessage(
+				`Login failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			return;
+		}
+		this.activeAuth = true;
+		this.activeAuthAbort = new AbortController();
+		this.setStatusState("Authenticating");
+		this.addSystemMessage(
+			`Starting ${providerName} login. Credentials will be saved to ${authPath}.`,
+		);
+
+		try {
+			await this.harness.login(provider, this.createLoginCallbacks());
+			this.resolveActiveAuthInput("", { silent: true });
+			this.addSystemMessage(`Logged in to ${providerName}. Credentials saved to ${authPath}.`);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			if (message !== "Login cancelled") {
+				this.addSystemMessage(`Login failed: ${message}`);
+			}
+		} finally {
+			this.activeAuth = false;
+			this.activeAuthAbort = undefined;
+			this.activeAuthInput = undefined;
+			this.setStatusState("Ready");
+			this.ui.setFocus(this.editor);
+			this.ui.requestRender();
+		}
+	}
+
+	private async handleLogoutCommand(providerArg?: string): Promise<void> {
+		const provider = this.resolvePinnedAuthProvider(providerArg, "/logout");
+		if (!provider) return;
+		if (this.activeTurn || this.activeAuth) {
+			this.addSystemMessage("Wait for the current turn or authentication flow to finish before logging out.");
+			return;
+		}
+		if (!this.harness.logout) {
+			this.addSystemMessage("This Solist harness does not expose logout support.");
+			return;
+		}
+
+		try {
+			const providerName = await this.getProviderName(provider);
+			await this.harness.logout(provider);
+			this.addSystemMessage(
+				`Logged out of ${providerName}. Removed stored credentials from ${this.getAuthPath()}.`,
+			);
+		} catch (error) {
+			this.addSystemMessage(
+				`Logout failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
+
+	private createLoginCallbacks(): OAuthLoginCallbacks {
+		return {
+			onAuth: (info) => {
+				openBrowser(info.url);
+				this.addSystemMessage(
+					[
+						"Open this authentication URL:",
+						info.url,
+						info.instructions ?? "Complete login in the browser to finish.",
+					].join("\n"),
+				);
+			},
+			onPrompt: (prompt) =>
+				this.promptForAuthInput(
+					prompt.placeholder
+						? `${prompt.message}\n${prompt.placeholder}`
+						: prompt.message,
+				),
+			onProgress: (message) => {
+				this.addSystemMessage(message);
+			},
+			onManualCodeInput: () =>
+				this.promptForAuthInput(
+					"Paste the redirect URL or authorization code below, or complete login in the browser:",
+				),
+			onSelect: (prompt) => this.promptForAuthSelection(prompt),
+			signal: this.activeAuthAbort?.signal,
+		};
+	}
+
+	private promptForAuthInput(message: string): Promise<string> {
+		this.addSystemMessage(message);
+		this.editor.disableSubmit = false;
+		this.ui.setFocus(this.editor);
+		this.ui.requestRender();
+
+		return new Promise((resolve, reject) => {
+			this.activeAuthInput = {
+				resolve: (value) => {
+					this.activeAuthInput = undefined;
+					resolve(value.trim());
+				},
+				reject: (error) => {
+					this.activeAuthInput = undefined;
+					reject(error);
+				},
+			};
+		});
+	}
+
+	private async promptForAuthSelection(prompt: OAuthSelectPrompt): Promise<string | undefined> {
+		const optionsText = prompt.options
+			.map((option) => `${option.id}: ${option.label}`)
+			.join("\n");
+		const input = await this.promptForAuthInput(`${prompt.message}\n${optionsText}`);
+		const normalized = input.trim().toLowerCase();
+		return prompt.options.find((option) =>
+			option.id.toLowerCase() === normalized
+			|| option.label.toLowerCase() === normalized
+		)?.id;
+	}
+
+	private resolveActiveAuthInput(
+		input: string,
+		options: { silent?: boolean } = {},
+	): void {
+		const waiter = this.activeAuthInput;
+		if (!waiter) return;
+		waiter.resolve(input);
+		if (!options.silent) {
+			this.addSystemMessage("Authentication input received.");
+		}
+	}
+
+	private cancelActiveAuth(): void {
+		this.activeAuthAbort?.abort();
+		this.activeAuthInput?.reject(new Error("Login cancelled"));
+		this.activeAuthInput = undefined;
+		this.activeAuth = false;
+		this.activeAuthAbort = undefined;
+		this.setStatusState("Ready");
+		this.addSystemMessage("Authentication cancelled.");
+	}
+
+	private resolvePinnedAuthProvider(
+		providerArg: string | undefined,
+		command: "/login" | "/logout",
+	): string | undefined {
+		const provider = providerArg?.trim().toLowerCase() || SOLIST_MODEL_PROVIDER;
+		if (provider !== SOLIST_MODEL_PROVIDER) {
+			this.addSystemMessage(
+				`Solist is pinned to ${SOLIST_MODEL_PROVIDER}; ${command} only supports that provider.`,
+			);
+			return undefined;
+		}
+		return provider;
+	}
+
+	private async getProviderName(provider: string): Promise<string> {
+		return this.harness.getProviderName?.(provider) ?? provider;
+	}
+
+	private getAuthPath(): string {
+		return this.harness.authPath ?? getSolistAuthPath();
 	}
 
 	private renderEvent(event: AgentEvent): void {
@@ -499,6 +717,11 @@ type AgentActivityState =
 	| "streaming"
 	| "running tool";
 
+interface AuthInputWaiter {
+	resolve(value: string): void;
+	reject(error: Error): void;
+}
+
 const color = {
 	accent: (text: string) => `\x1b[36m${text}${ANSI_RESET}`,
 	dim: (text: string) => `\x1b[2m${text}${ANSI_RESET}`,
@@ -560,3 +783,25 @@ const defaultMarkdownTheme: MarkdownTheme = {
 	strikethrough: identity,
 	underline: identity,
 };
+
+function openBrowser(url: string): void {
+	const command = process.platform === "darwin"
+		? "open"
+		: process.platform === "win32"
+		? "cmd"
+		: "xdg-open";
+	const args = process.platform === "win32"
+		? ["/c", "start", "", url]
+		: [url];
+
+	try {
+		const child = spawn(command, args, {
+			detached: true,
+			stdio: "ignore",
+		});
+		child.on("error", () => {});
+		child.unref();
+	} catch {
+		// The URL is rendered in the terminal, so failing to auto-open is non-fatal.
+	}
+}

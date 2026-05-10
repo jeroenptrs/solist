@@ -10,8 +10,8 @@ The primary goal of `solist` is to provide a safe and efficient way to leverage 
 
 - **Node.js**: Version 22 or newer.
 - **Solo**: A running instance of Solo with the Solo MCP server enabled.
-- **Solo MCP configuration**: a configured `solo` MCP server. The stripped Solist harness connects to Solo MCP directly; the legacy wrapper path still validates a Solo-only Pi MCP config.
-- **Codex credentials**: `openai-codex` credentials in Pi's auth store, normally `~/.pi/agent/auth.json` after running `pi` and `/login` with the ChatGPT Plus/Pro (Codex) provider.
+- **Solo MCP configuration**: a configured `solo` MCP server, preferably in `~/.solist/mcp.json`. The stripped Solist harness connects to Solo MCP directly; the legacy wrapper path still validates a Solo-only Pi MCP config.
+- **Codex credentials**: `openai-codex` credentials in Solist's auth store, normally `~/.solist/auth.json` after running `/login` inside Solist.
 - **Model Access**: Access to `openai-codex/gpt-5.5` with `off` reasoning is required.
 
 ## Installation
@@ -62,7 +62,7 @@ With a global install, the equivalent command is:
 solist "Inspect todo 207 and propose the next Solo worker handoff"
 ```
 
-Inside the chat, press `/` at the start of the prompt to open the command overview, type `/help` for the Solist command set, or use `/exit` / `/quit` to stop the process. Assistant responses, tool calls, and tool completion events render in the same chat surface above the editor. The status line shows the current state, model, reasoning level, message count, tool count, Solo MCP availability, and cwd.
+Inside the chat, press `/` at the start of the prompt to open the command overview, type `/help` for the Solist command set, use `/login` / `/logout` to manage Solist's Codex credentials, or use `/exit` / `/quit` to stop the process. Assistant responses, tool calls, and tool completion events render in the same chat surface above the editor. The status line shows the current state, model, reasoning level, message count, tool count, Solo MCP availability, and cwd.
 
 You can also provide a prompt on stdin when no prompt arguments are present. Piped stdin is non-interactive, so Solist treats it as a batch prompt and exits after the response:
 
@@ -98,14 +98,13 @@ pnpm run solist -- --check
 
 ### Codex Authentication
 
-Solist is pinned to the `openai-codex/gpt-5.5` provider/model pair. That provider uses Pi's Codex OAuth/subscription auth, not the regular OpenAI API-key provider.
+Solist is pinned to the `openai-codex/gpt-5.5` provider/model pair. That provider uses Codex OAuth/subscription auth through Pi's exported auth primitives, not the regular OpenAI API-key provider.
 
-Authenticate once through Pi:
+Authenticate once through Solist:
 
 ```bash
-pi
+solist
 /login
-# choose ChatGPT Plus/Pro (Codex)
 ```
 
 Then verify Solist can see the stored credential:
@@ -114,7 +113,9 @@ Then verify Solist can see the stored credential:
 pnpm run solist -- --check
 ```
 
-The stored credential should appear as provider auth for `openai-codex`. The harness resolves keys through Pi's auth store and refresh path before falling back to provider environment variables. For this pinned Codex provider, `OPENAI_API_KEY` alone is not a substitute; that belongs to the separate `openai` provider.
+The stored credential should appear as provider auth for `openai-codex`. The harness resolves keys through Solist's auth store at `~/.solist/auth.json` and uses Pi's auth storage implementation for OAuth refresh and file locking. For this pinned Codex provider, `OPENAI_API_KEY` alone is not a substitute; that belongs to the separate `openai` provider.
+
+Use `/logout` inside Solist to remove the stored Codex credential from `~/.solist/auth.json`.
 
 Validate the legacy wrapper fallback instead:
 
@@ -134,6 +135,16 @@ Durable orchestration state belongs in Solo: plans, todos, blockers, worker hand
 
 ## Configuration
 
+### Solist Home
+
+Solist-owned credentials and primary MCP configuration live under `~/.solist` by default. Override with:
+
+```bash
+SOLIST_HOME=/path/to/solist-home solist
+SOLIST_AUTH_PATH=/path/to/auth.json solist
+SOLIST_MCP_CONFIG=/path/to/mcp.json solist
+```
+
 ### MCP Allowlist
 
 `solist` defaults to allowing only the `solo` MCP server. This ensures the orchestrator operates within the intended safety boundaries. The `SOLIST_MCP_ALLOWLIST` environment variable can be used as an override or validation guard if needed:
@@ -143,7 +154,7 @@ Durable orchestration state belongs in Solo: plans, todos, blockers, worker hand
 SOLIST_MCP_ALLOWLIST=solo pnpm run solist
 ```
 
-At launch, `solist` validates the merged MCP config and rejects any non-`solo` server. The stripped harness exposes typed tools named `solo_mcp_<operation>` that map directly to Solo MCP operations such as `todo_get`, `scratchpad_read`, `spawn_process`, and timer/process output tools. Broad or destructive Solo MCP operations are not exposed through the orchestrator surface.
+At launch, `solist` validates the merged MCP config and rejects any non-`solo` server. The stripped harness looks for MCP config in `~/.solist/mcp.json`, `~/.config/mcp/mcp.json`, project `.mcp.json`, and project `.solist/mcp.json` by default. Set `SOLIST_MCP_CONFIG=/path/to/mcp.json` to override the primary config path. The stripped harness exposes typed tools named `solo_mcp_<operation>` that map directly to Solo MCP operations such as `todo_get`, `scratchpad_read`, `spawn_process`, and timer/process output tools. Broad or destructive Solo MCP operations are not exposed through the orchestrator surface.
 
 The default harness path resolves the Solo-only MCP config and exposes only Solist-owned read-only local tools plus explicit Solo MCP operation wrappers. It does not use a persistent local session store; durable orchestration state belongs in Solo and conversation history remains in memory for the current run.
 

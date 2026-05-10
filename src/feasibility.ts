@@ -1,7 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
-import { getEnvApiKey, getModel } from "@earendil-works/pi-ai";
+import { getModel } from "@earendil-works/pi-ai";
 import type {
   AuthStorage as AuthStorageType,
   createAgentSessionFromServices as createAgentSessionFromServicesType,
@@ -22,6 +19,7 @@ import {
 import { resolveSoloMcpAllowlist } from "./orchestratorPolicy.js";
 import { resolveSoloMcpRuntimeConfig, writeSoloMcpRuntimeConfig } from "./soloMcp.js";
 import { createSolistReadOnlyTools, SOLIST_READ_ONLY_TOOL_NAMES } from "./harness/readOnlyTools.js";
+import { getSolistProviderAuthStatus } from "./harness/auth.js";
 import {
   checkSoloMcpReachability,
   createSoloMcpTools,
@@ -55,6 +53,7 @@ export interface HarnessBoundaryCheckResult {
   modelAvailable: boolean;
   providerAuthConfigured: boolean;
   providerAuthSource?: "stored" | "environment";
+  providerAuthPath: string;
   mcpConfigSources?: readonly string[];
   mcpConfiguredServers?: readonly string[];
   localReadOnlyTools: readonly string[];
@@ -188,7 +187,7 @@ export async function checkHarnessRuntimeBoundary(): Promise<HarnessBoundaryChec
   const expectedReadOnlyTools = [...SOLIST_READ_ONLY_TOOL_NAMES];
   const readOnlyToolsOk = namesEqual(localReadOnlyTools, expectedReadOnlyTools);
   const modelAvailable = isHarnessModelAvailable();
-  const providerAuth = getHarnessProviderAuthStatus();
+  const providerAuth = await getSolistProviderAuthStatus(SOLIST_MODEL_PROVIDER);
 
   let mcpConfigSources: readonly string[] | undefined;
   let mcpConfiguredServers: readonly string[] | undefined;
@@ -241,6 +240,7 @@ export async function checkHarnessRuntimeBoundary(): Promise<HarnessBoundaryChec
     modelAvailable,
     providerAuthConfigured: providerAuth.configured,
     providerAuthSource: providerAuth.source,
+    providerAuthPath: providerAuth.authPath,
     mcpConfigSources,
     mcpConfiguredServers,
     localReadOnlyTools,
@@ -269,40 +269,4 @@ function isHarnessModelAvailable(): boolean {
   } catch {
     return false;
   }
-}
-
-function getHarnessProviderAuthStatus(): {
-  readonly configured: boolean;
-  readonly source?: "stored" | "environment";
-} {
-  if (hasStoredProviderAuth(SOLIST_MODEL_PROVIDER)) {
-    return { configured: true, source: "stored" };
-  }
-
-  if (getEnvApiKey(SOLIST_MODEL_PROVIDER)) {
-    return { configured: true, source: "environment" };
-  }
-
-  return { configured: false };
-}
-
-function hasStoredProviderAuth(provider: string): boolean {
-  const authPath = join(resolvePiAgentDir(), "auth.json");
-  if (!existsSync(authPath)) {
-    return false;
-  }
-
-  try {
-    const raw = JSON.parse(readFileSync(authPath, "utf8")) as unknown;
-    return typeof raw === "object"
-      && raw !== null
-      && !Array.isArray(raw)
-      && provider in raw;
-  } catch {
-    return false;
-  }
-}
-
-function resolvePiAgentDir(env: NodeJS.ProcessEnv = process.env): string {
-  return env.PI_CODING_AGENT_DIR ? resolve(env.PI_CODING_AGENT_DIR) : join(homedir(), ".pi", "agent");
 }

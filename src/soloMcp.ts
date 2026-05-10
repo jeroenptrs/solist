@@ -1,6 +1,9 @@
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { getSolistMcpConfigPaths } from "./solistPaths.js";
+
+export { getSolistMcpConfigPaths } from "./solistPaths.js";
 
 export interface SolistMcpServerConfig {
   readonly [key: string]: unknown;
@@ -20,22 +23,6 @@ export interface SolistResolvedSoloMcp {
   readonly mergedServerNames: readonly string[];
   readonly sourcePaths: readonly string[];
   readonly config: SolistMcpConfig;
-}
-
-function resolvePiAgentDir(env: NodeJS.ProcessEnv = process.env): string {
-  return env.PI_CODING_AGENT_DIR ? resolve(env.PI_CODING_AGENT_DIR) : join(homedir(), ".pi", "agent");
-}
-
-export function getSolistMcpConfigPaths(
-  cwd = process.cwd(),
-  env: NodeJS.ProcessEnv = process.env
-): readonly string[] {
-  return [
-    join(homedir(), ".config", "mcp", "mcp.json"),
-    join(resolvePiAgentDir(env), "mcp.json"),
-    resolve(cwd, ".mcp.json"),
-    resolve(cwd, ".pi", "mcp.json")
-  ];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

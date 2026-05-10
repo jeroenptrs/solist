@@ -22,6 +22,14 @@ export const SOLIST_INTERACTIVE_COMMANDS: readonly SlashCommand[] = [
 		name: "status",
 		description: "Show model, reasoning, cwd, message count, and tool count",
 	},
+	{
+		name: "login",
+		description: "Authenticate Solist with the pinned Codex provider",
+	},
+	{
+		name: "logout",
+		description: "Remove Solist's stored Codex credentials",
+	},
 ];
 
 const SOLIST_INTERACTIVE_COMMAND_NAMES = new Set(
@@ -38,8 +46,6 @@ const UNSUPPORTED_PI_COMMANDS = new Set([
 	"/fork",
 	"/clone",
 	"/tree",
-	"/login",
-	"/logout",
 	"/resume",
 	"/reload",
 	"/compact",
@@ -65,6 +71,8 @@ export type SolistInteractiveRoute =
 	| { kind: "exit" }
 	| { kind: "clear"; message: string }
 	| { kind: "render"; message: string }
+	| { kind: "login"; provider?: string }
+	| { kind: "logout"; provider?: string }
 	| { kind: "prompt"; prompt: string };
 
 export function routeSolistInteractiveInput(
@@ -114,6 +122,14 @@ export function routeSolistInteractiveInput(
 		return { kind: "render", message: getStatusText(context.status) };
 	}
 
+	if (normalized === "/login" || normalized.startsWith("/login ")) {
+		return { kind: "login", provider: getCommandArgument(trimmed) };
+	}
+
+	if (normalized === "/logout" || normalized.startsWith("/logout ")) {
+		return { kind: "logout", provider: getCommandArgument(trimmed) };
+	}
+
 	if (trimmed.startsWith("/")) {
 		return {
 			kind: "render",
@@ -161,8 +177,14 @@ function getInteractiveHelpText(): string {
 		"",
 		"Solist keeps this process' conversation context in memory and uses Solo for durable plans, todos, blockers, and worker handoffs.",
 		"Use the editor for multi-line prompts: Shift+Enter, Ctrl+Enter, or Alt+Enter inserts a newline when your terminal supports it.",
-		"Pi session commands, model switching, import/export/share, resume/fork/tree, login/logout, reload, compact, and ! shell mode are not available.",
+		"Pi session commands, model switching, import/export/share, resume/fork/tree, reload, compact, and ! shell mode are not available.",
 	].join("\n");
+}
+
+function getCommandArgument(input: string): string | undefined {
+	const [, ...parts] = input.trim().split(/\s+/);
+	const arg = parts.join(" ").trim();
+	return arg || undefined;
 }
 
 function getToolsText(tools: readonly AgentTool[]): string {
