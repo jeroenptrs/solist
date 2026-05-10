@@ -9,6 +9,7 @@ import type { AssistantMessageEvent } from "@earendil-works/pi-ai";
 import {
 	Container,
 	Editor,
+	Loader,
 	Markdown,
 	matchesKey,
 	ProcessTerminal,
@@ -17,6 +18,7 @@ import {
 	TruncatedText,
 	TUI,
 	CombinedAutocompleteProvider,
+	type Component,
 	type EditorTheme,
 	type MarkdownTheme,
 	type Terminal,
@@ -61,12 +63,14 @@ export class SolistInteractiveMode {
 	private unsubscribe?: () => void;
 	private resolveRun?: () => void;
 	private statusState = "Ready";
+	private agentState: AgentActivityState = "idle";
 	private activeTurn = false;
 	private interruptRequested = false;
 	private stopped = false;
 	private currentAssistant?: {
 		text: string;
 		component: Markdown;
+		placeholder?: Loader;
 	};
 
 	constructor(
@@ -113,9 +117,12 @@ export class SolistInteractiveMode {
 	private setupLayout(): void {
 		if (this.showWelcome) {
 			this.chat.addChild(new Spacer(1));
-			this.chat.addChild(new Text("Solist interactive chat", 1, 0));
+			for (const line of getSolistAsciiArt()) {
+				this.chat.addChild(new Text(line, 1, 0));
+			}
+			this.chat.addChild(new Text(color.dim("   Solo orchestration agent"), 1, 0));
 			this.chat.addChild(
-				new Text("Type /help for commands, /exit to quit.", 1, 0),
+				new Text(color.dim("   Type /help for commands, /exit to quit."), 1, 0),
 			);
 			this.chat.addChild(new Spacer(1));
 		}
@@ -146,9 +153,10 @@ export class SolistInteractiveMode {
 		}
 		if (route.kind === "clear") {
 			this.chat.clear();
-			this.currentAssistant = undefined;
+			this.clearCurrentAssistant();
 			this.chat.addChild(new Text(route.message, 1, 0));
 			this.setStatusState("Ready");
+			this.setAgentState("idle");
 			this.ui.requestRender(true);
 			return;
 		}
@@ -180,6 +188,7 @@ export class SolistInteractiveMode {
 		this.interruptRequested = false;
 		this.editor.disableSubmit = true;
 		this.setStatusState("Working");
+		this.setAgentState("thinking");
 
 		try {
 			await this.harness.run(prompt);
@@ -196,6 +205,7 @@ export class SolistInteractiveMode {
 			this.interruptRequested = false;
 			this.editor.disableSubmit = false;
 			this.setStatusState("Ready");
+			this.setAgentState("idle");
 			this.ui.setFocus(this.editor);
 			this.ui.requestRender();
 		}
@@ -218,6 +228,18 @@ export class SolistInteractiveMode {
 
 	private renderEvent(event: AgentEvent): void {
 		switch (event.type) {
+			case "agent_start":
+				this.setAgentState("thinking");
+				break;
+			case "agent_end":
+				this.setAgentState("idle");
+				break;
+			case "turn_start":
+				this.setAgentState("thinking");
+				break;
+			case "turn_end":
+				if (this.activeTurn) this.setAgentState("thinking");
+				break;
 			case "message_start":
 				this.renderMessageStart(event.message);
 				break;
@@ -228,6 +250,7 @@ export class SolistInteractiveMode {
 				this.renderMessageEnd(event.message);
 				break;
 			case "tool_execution_start":
+				this.setAgentState("running tool");
 				this.setStatusState(`Running ${event.toolName}`);
 				this.addToolMessage(
 					`${event.toolName} started ${summarizeValue(event.args)}`,
@@ -239,6 +262,7 @@ export class SolistInteractiveMode {
 				);
 				break;
 			case "tool_execution_end":
+				this.setAgentState(this.activeTurn ? "thinking" : "idle");
 				this.setStatusState(this.activeTurn ? "Working" : "Ready");
 				this.addToolMessage(
 					`${event.toolName} ${event.isError ? "failed" : "completed"} ${summarizeValue(event.result)}`,
@@ -251,16 +275,18 @@ export class SolistInteractiveMode {
 	private renderMessageStart(message: AgentMessage): void {
 		if (message.role === "user") {
 			this.chat.addChild(new Spacer(1));
-			this.chat.addChild(new Text(`You: ${extractMessageText(message)}`, 1, 0));
+			this.chat.addChild(createUserMessage(extractMessageText(message)));
 			return;
 		}
 
 		if (message.role === "assistant") {
 			this.chat.addChild(new Spacer(1));
-			this.chat.addChild(new Text("Assistant:", 1, 0));
+			const placeholder = createThinkingPlaceholder(this.ui);
 			const component = new Markdown("", 1, 0, defaultMarkdownTheme);
+			this.chat.addChild(placeholder);
 			this.chat.addChild(component);
-			this.currentAssistant = { text: "", component };
+			this.currentAssistant = { text: "", component, placeholder };
+			this.setAgentState("thinking");
 		}
 	}
 
@@ -274,24 +300,39 @@ export class SolistInteractiveMode {
 		if (errorMessage) {
 			this.addSystemMessage(`Error: ${errorMessage}`);
 		}
-		this.currentAssistant = undefined;
+		this.clearCurrentAssistant();
 	}
 
 	private renderAssistantUpdate(event: AssistantMessageEvent): void {
+		if (event.type === "thinking_start" || event.type === "thinking_delta") {
+			this.setAgentState("thinking");
+			this.ensureAssistantPlaceholder();
+			return;
+		}
+
 		if (event.type === "text_delta") {
 			if (!this.currentAssistant) {
-				const component = new Markdown("", 1, 0, defaultMarkdownTheme);
 				this.chat.addChild(new Spacer(1));
-				this.chat.addChild(new Text("Assistant:", 1, 0));
+				const component = new Markdown("", 1, 0, defaultMarkdownTheme);
 				this.chat.addChild(component);
 				this.currentAssistant = { text: "", component };
 			}
+			this.removeAssistantPlaceholder();
+			this.setAgentState("streaming");
 			this.currentAssistant.text += event.delta;
 			this.currentAssistant.component.setText(this.currentAssistant.text);
 			return;
 		}
 
+		if (event.type === "toolcall_start" || event.type === "toolcall_delta") {
+			this.setAgentState("thinking");
+			this.ensureAssistantPlaceholder();
+			return;
+		}
+
 		if (event.type === "toolcall_end") {
+			this.removeAssistantPlaceholder();
+			this.setAgentState("running tool");
 			this.addToolMessage(
 				`call ${event.toolCall.name} ${summarizeValue(event.toolCall.arguments)}`,
 			);
@@ -316,18 +357,59 @@ export class SolistInteractiveMode {
 		this.updateStatusLine();
 	}
 
+	private setAgentState(state: AgentActivityState): void {
+		this.agentState = state;
+		this.updateStatusLine();
+	}
+
+	private ensureAssistantPlaceholder(): void {
+		if (!this.currentAssistant) {
+			const placeholder = createThinkingPlaceholder(this.ui);
+			const component = new Markdown("", 1, 0, defaultMarkdownTheme);
+			this.chat.addChild(new Spacer(1));
+			this.chat.addChild(placeholder);
+			this.chat.addChild(component);
+			this.currentAssistant = { text: "", component, placeholder };
+			return;
+		}
+		if (!this.currentAssistant.placeholder && !this.currentAssistant.text) {
+			const placeholder = createThinkingPlaceholder(this.ui);
+			this.chat.removeChild(this.currentAssistant.component);
+			this.chat.addChild(placeholder);
+			this.chat.addChild(this.currentAssistant.component);
+			this.currentAssistant.placeholder = placeholder;
+		}
+	}
+
+	private removeAssistantPlaceholder(): void {
+		const currentAssistant = this.currentAssistant;
+		const placeholder = currentAssistant?.placeholder;
+		if (!placeholder) return;
+		placeholder.stop();
+		this.chat.removeChild(placeholder);
+		currentAssistant.placeholder = undefined;
+	}
+
+	private clearCurrentAssistant(): void {
+		this.removeAssistantPlaceholder();
+		this.currentAssistant = undefined;
+	}
+
 	private updateStatusLine(): void {
 		const model = `${this.harness.modelRef.provider}/${this.harness.modelRef.model}`;
-		const solo = this.soloMcpAvailable ? "solo:ok" : "solo:down";
+		const solo = this.soloMcpAvailable
+			? color.success("solo:ok")
+			: color.error("solo:down");
 		const cwdName = basename(this.cwd) || this.cwd;
 		const line = [
-			`Solist ${this.statusState}`,
-			model,
-			`reasoning:${this.harness.thinkingLevel}`,
-			`messages:${this.harness.messages.length}`,
-			`tools:${this.harness.tools.length}`,
+			colorStatusState(this.statusState),
+			colorAgentState(this.agentState),
+			color.accent(model),
+			color.dim(`reasoning:${this.harness.thinkingLevel}`),
+			color.dim(`messages:${this.harness.messages.length}`),
+			color.dim(`tools:${this.harness.tools.length}`),
 			solo,
-			`cwd:${cwdName}`,
+			color.dim(`cwd:${cwdName}`),
 		].join(" | ");
 		this.status.clear();
 		this.status.addChild(new TruncatedText(line, 1, 0));
@@ -350,6 +432,7 @@ export class SolistInteractiveMode {
 	private async stop(): Promise<void> {
 		if (this.stopped) return;
 		this.stopped = true;
+		this.clearCurrentAssistant();
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
 		this.editor.disableSubmit = true;
@@ -382,6 +465,16 @@ function extractMessageText(message: AgentMessage): string {
 	return "";
 }
 
+function createUserMessage(text: string): Component {
+	return new Text(text, 1, 1, color.userBackground);
+}
+
+function createThinkingPlaceholder(ui: TUI): Loader {
+	const placeholder = new Loader(ui, color.accent, color.dim, "Thinking...");
+	placeholder.start();
+	return placeholder;
+}
+
 function summarizeValue(value: unknown): string {
 	const json = safeJson(value);
 	if (json.length <= 360) return json;
@@ -397,6 +490,48 @@ function safeJson(value: unknown): string {
 }
 
 const identity = (text: string) => text;
+
+const ANSI_RESET = "\x1b[0m";
+
+type AgentActivityState =
+	| "idle"
+	| "thinking"
+	| "streaming"
+	| "running tool";
+
+const color = {
+	accent: (text: string) => `\x1b[36m${text}${ANSI_RESET}`,
+	dim: (text: string) => `\x1b[2m${text}${ANSI_RESET}`,
+	error: (text: string) => `\x1b[31m${text}${ANSI_RESET}`,
+	success: (text: string) => `\x1b[32m${text}${ANSI_RESET}`,
+	userBackground: (text: string) => `\x1b[48;5;238m${text}${ANSI_RESET}`,
+	warning: (text: string) => `\x1b[33m${text}${ANSI_RESET}`,
+};
+
+function colorStatusState(state: string): string {
+	if (state === "Ready") return color.success("Solist Ready");
+	if (state === "Working") return color.accent("Solist Working");
+	if (state.startsWith("Running ")) return color.warning(`Solist ${state}`);
+	return color.dim(`Solist ${state}`);
+}
+
+function colorAgentState(state: AgentActivityState): string {
+	const text = `agent:${state}`;
+	if (state === "idle") return color.dim(text);
+	if (state === "thinking") return color.warning(text);
+	if (state === "streaming") return color.accent(text);
+	return color.warning(text);
+}
+
+function getSolistAsciiArt(): readonly string[] {
+	return [
+		color.accent("  ____        _ _     _"),
+		color.accent(" / ___|  ___ | (_)___| |_"),
+		color.accent(" \\___ \\ / _ \\| | / __| __|"),
+		color.accent("  ___) | (_) | | \\__ \\ |_"),
+		color.accent(" |____/ \\___/|_|_|___/\\__|"),
+	];
+}
 
 const defaultEditorTheme: EditorTheme = {
 	borderColor: identity,

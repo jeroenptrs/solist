@@ -71,7 +71,33 @@ function waitForRender(): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, 35));
 }
 
+function createDeferred(): { promise: Promise<void>; resolve: () => void } {
+	let resolve!: () => void;
+	const promise = new Promise<void>((done) => {
+		resolve = done;
+	});
+	return { promise, resolve };
+}
+
 describe("SolistInteractiveMode", () => {
+	it("renders a colored Solist ascii banner in the welcome area", async () => {
+		const terminal = new FakeTerminal();
+		const mode = new SolistInteractiveMode(createHarness(), {
+			terminal,
+			cwd: "/tmp/project",
+		});
+
+		const done = mode.run();
+		await waitForRender();
+
+		expect(terminal.output).toContain("____        _ _     _");
+		expect(terminal.output).toContain("Solo orchestration agent");
+		expect(terminal.output).toContain("\x1b[36m");
+
+		terminal.send("/exit\r");
+		await done;
+	});
+
 	it("renders slash command overview and statusline", async () => {
 		const terminal = new FakeTerminal();
 		const mode = new SolistInteractiveMode(createHarness(), {
@@ -89,7 +115,9 @@ describe("SolistInteractiveMode", () => {
 		expect(terminal.output).toContain("exit");
 		expect(terminal.output).not.toContain("quit");
 		expect(terminal.output).toContain("openai-codex/gpt-5.5");
+		expect(terminal.output).toContain("agent:idle");
 		expect(terminal.output).toContain("reasoning:off");
+		expect(terminal.output).toContain("\x1b[32mSolist Ready");
 
 		terminal.send("exit\r");
 		await done;
@@ -130,5 +158,188 @@ describe("SolistInteractiveMode", () => {
 		await done;
 		expect(terminal.stopped).toBe(true);
 		expect(closed).toBe(true);
+	});
+
+	it("renders user turns as unlabeled full-width background blocks", async () => {
+		const terminal = new FakeTerminal();
+		const releaseRun = createDeferred();
+		let listener: ((event: AgentEvent, signal: AbortSignal) => Promise<void> | void) | undefined;
+		const signal = new AbortController().signal;
+		const harness = {
+			...createHarness(),
+			async run(prompt: string) {
+				listener?.({
+					type: "message_start",
+					message: {
+						role: "user",
+						content: [{ type: "text", text: prompt }],
+					} as AgentMessage,
+				} as AgentEvent, signal);
+				await releaseRun.promise;
+			},
+			subscribe(nextListener: (event: AgentEvent, signal: AbortSignal) => Promise<void> | void) {
+				listener = nextListener;
+				return () => {
+					listener = undefined;
+				};
+			},
+		} satisfies SolistInteractiveHarness;
+		const mode = new SolistInteractiveMode(harness, {
+			terminal,
+			showWelcome: false,
+		});
+
+		const done = mode.run("Please plan this");
+		await waitForRender();
+
+		expect(terminal.output).toContain("Please plan this");
+		expect(terminal.output).toContain("\x1b[48;5;238m");
+		expect(terminal.output).not.toContain("You:");
+		expect(terminal.output).not.toContain("Assistant:");
+
+		releaseRun.resolve();
+		await waitForRender();
+		terminal.send("/exit\r");
+		await done;
+	});
+
+	it("streams assistant deltas into the current response before the turn ends", async () => {
+		const terminal = new FakeTerminal();
+		const releaseRun = createDeferred();
+		let listener: ((event: AgentEvent, signal: AbortSignal) => Promise<void> | void) | undefined;
+		const signal = new AbortController().signal;
+		const harness = {
+			...createHarness(),
+			get isStreaming() {
+				return true;
+			},
+			async run() {
+				listener?.({
+					type: "message_start",
+					message: {
+						role: "assistant",
+						content: [{ type: "text", text: "" }],
+					} as AgentMessage,
+				} as AgentEvent, signal);
+				listener?.({
+					type: "message_update",
+					assistantMessageEvent: {
+						type: "text_delta",
+						delta: "Partial response",
+					},
+				} as AgentEvent, signal);
+				await releaseRun.promise;
+				listener?.({
+					type: "message_update",
+					assistantMessageEvent: {
+						type: "text_delta",
+						delta: " completed",
+					},
+				} as AgentEvent, signal);
+				listener?.({
+					type: "message_end",
+					message: {
+						role: "assistant",
+						content: [{ type: "text", text: "Partial response completed" }],
+					} as AgentMessage,
+				} as AgentEvent, signal);
+			},
+			subscribe(nextListener: (event: AgentEvent, signal: AbortSignal) => Promise<void> | void) {
+				listener = nextListener;
+				return () => {
+					listener = undefined;
+				};
+			},
+		} satisfies SolistInteractiveHarness;
+		const mode = new SolistInteractiveMode(harness, {
+			terminal,
+			showWelcome: false,
+		});
+
+		const done = mode.run("start");
+		await waitForRender();
+
+		expect(terminal.output).toContain("Partial response");
+		expect(terminal.output).not.toContain("completed");
+		expect(terminal.output).not.toContain("Assistant:");
+
+		releaseRun.resolve();
+		await waitForRender();
+		expect(terminal.output).toContain("Partial response completed");
+
+		terminal.send("/exit\r");
+		await done;
+	});
+
+	it("shows a thinking spinner placeholder before assistant text streams", async () => {
+		const terminal = new FakeTerminal();
+		const releaseDelta = createDeferred();
+		const releaseRun = createDeferred();
+		let listener: ((event: AgentEvent, signal: AbortSignal) => Promise<void> | void) | undefined;
+		const signal = new AbortController().signal;
+		const harness = {
+			...createHarness(),
+			get isStreaming() {
+				return true;
+			},
+			async run() {
+				listener?.({ type: "agent_start" } as AgentEvent, signal);
+				listener?.({ type: "turn_start" } as AgentEvent, signal);
+				listener?.({
+					type: "message_start",
+					message: {
+						role: "assistant",
+						content: [{ type: "text", text: "" }],
+					} as AgentMessage,
+				} as AgentEvent, signal);
+				await releaseDelta.promise;
+				listener?.({
+					type: "message_update",
+					assistantMessageEvent: {
+						type: "text_delta",
+						delta: "Started",
+					},
+				} as AgentEvent, signal);
+				await releaseRun.promise;
+				listener?.({
+					type: "message_end",
+					message: {
+						role: "assistant",
+						content: [{ type: "text", text: "Started" }],
+					} as AgentMessage,
+				} as AgentEvent, signal);
+				listener?.({
+					type: "agent_end",
+					messages: [],
+				} as AgentEvent, signal);
+			},
+			subscribe(nextListener: (event: AgentEvent, signal: AbortSignal) => Promise<void> | void) {
+				listener = nextListener;
+				return () => {
+					listener = undefined;
+				};
+			},
+		} satisfies SolistInteractiveHarness;
+		const mode = new SolistInteractiveMode(harness, {
+			terminal,
+			showWelcome: false,
+		});
+
+		const done = mode.run("start");
+		await waitForRender();
+
+		expect(terminal.output).toContain("Thinking...");
+		expect(terminal.output).toContain("agent:thinking");
+		expect(terminal.output).not.toContain("Started");
+
+		releaseDelta.resolve();
+		await waitForRender();
+		expect(terminal.output).toContain("Started");
+		expect(terminal.output).toContain("agent:streaming");
+
+		releaseRun.resolve();
+		await waitForRender();
+		terminal.send("/exit\r");
+		await done;
 	});
 });
