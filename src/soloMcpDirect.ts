@@ -4,6 +4,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
 import type { TSchema } from "@earendil-works/pi-ai";
 import type { SolistMcpServerConfig, SolistResolvedSoloMcp } from "./soloMcp.js";
+import type { SolistToolProfile } from "./solistModes.js";
 
 export interface SoloMcpToolDefinition {
   readonly name: string;
@@ -185,7 +186,7 @@ export class StdioSoloMcpClient implements SoloMcpClient {
   }
 }
 
-export const SOLO_MCP_EXPOSED_OPERATIONS = [
+export const SOLO_MCP_ORCHESTRATION_OPERATIONS = [
   "scratchpad_list",
   "scratchpad_read",
   "scratchpad_write",
@@ -207,6 +208,7 @@ export const SOLO_MCP_EXPOSED_OPERATIONS = [
   "todo_comment_update",
   "list_agent_tools",
   "spawn_process",
+  "send_input",
   "list_processes",
   "get_process_status",
   "get_process_output",
@@ -220,7 +222,15 @@ export const SOLO_MCP_EXPOSED_OPERATIONS = [
   "timer_fire_when_idle_all",
 ] as const;
 
-export type SoloMcpExposedOperation = typeof SOLO_MCP_EXPOSED_OPERATIONS[number];
+export const SOLO_MCP_EXPOSED_OPERATIONS = SOLO_MCP_ORCHESTRATION_OPERATIONS;
+
+export type SoloMcpExposedOperation = typeof SOLO_MCP_ORCHESTRATION_OPERATIONS[number];
+
+export function getSoloMcpOperationsForProfile(
+  _profile: SolistToolProfile,
+): readonly SoloMcpExposedOperation[] {
+  return SOLO_MCP_ORCHESTRATION_OPERATIONS;
+}
 
 const SOLO_MCP_BLOCKED_OPERATIONS = new Set([
   "scratchpad_delete",
@@ -254,6 +264,7 @@ const OPERATION_DESCRIPTIONS: Record<SoloMcpExposedOperation, string> = {
   todo_comment_update: "Solo MCP todo_comment_update: update a Solo todo comment.",
   list_agent_tools: "Solo MCP list_agent_tools: list Solo worker agent runtimes.",
   spawn_process: "Solo MCP spawn_process: spawn a Solo terminal or worker agent process.",
+  send_input: "Solo MCP send_input: send an assignment or follow-up input to a Solo process.",
   list_processes: "Solo MCP list_processes: list Solo processes.",
   get_process_status: "Solo MCP get_process_status: inspect one Solo process status.",
   get_process_output: "Solo MCP get_process_output: read rendered output for one Solo process.",
@@ -276,14 +287,14 @@ export function createDirectSoloMcpClient(server: SolistMcpServerConfig): SoloMc
 
 export function createSoloMcpTools(
   resolved: SolistResolvedSoloMcp,
-  options: { readonly clientFactory?: SoloMcpClientFactory } = {},
+  options: { readonly clientFactory?: SoloMcpClientFactory; readonly operations?: readonly SoloMcpExposedOperation[] } = {},
 ): AgentTool[] {
   return createSoloMcpToolSet(resolved, options).tools;
 }
 
 export function createSoloMcpToolSet(
   resolved: SolistResolvedSoloMcp,
-  options: { readonly clientFactory?: SoloMcpClientFactory } = {},
+  options: { readonly clientFactory?: SoloMcpClientFactory; readonly operations?: readonly SoloMcpExposedOperation[] } = {},
 ): SoloMcpToolSet {
   const serverNames = Object.keys(resolved.config.mcpServers);
   const nonSoloServers = serverNames.filter((name) => name !== "solo");
@@ -298,7 +309,8 @@ export function createSoloMcpToolSet(
 
   const client = options.clientFactory?.(soloServer) ?? createDirectSoloMcpClient(soloServer);
   return {
-    tools: SOLO_MCP_EXPOSED_OPERATIONS.map((operation) => createSoloMcpTool(operation, client)),
+    tools: (options.operations ?? SOLO_MCP_EXPOSED_OPERATIONS)
+      .map((operation) => createSoloMcpTool(operation, client)),
     async close() {
       await client.close?.();
     },
@@ -307,14 +319,15 @@ export function createSoloMcpToolSet(
 
 export async function checkSoloMcpReachability(
   resolved: SolistResolvedSoloMcp,
-  options: { readonly clientFactory?: SoloMcpClientFactory } = {},
+  options: { readonly clientFactory?: SoloMcpClientFactory; readonly operations?: readonly SoloMcpExposedOperation[] } = {},
 ): Promise<{ readonly ok: boolean; readonly exposedOperations: readonly string[]; readonly serverTools: readonly string[] }> {
   const client = options.clientFactory?.(resolved.config.mcpServers.solo)
     ?? createDirectSoloMcpClient(resolved.config.mcpServers.solo);
   try {
     const tools = await client.listTools();
     const serverTools = tools.map((tool) => tool.name);
-    const exposedOperations = SOLO_MCP_EXPOSED_OPERATIONS.filter((operation) => serverTools.includes(operation));
+    const exposedOperations = (options.operations ?? SOLO_MCP_EXPOSED_OPERATIONS)
+      .filter((operation) => serverTools.includes(operation));
     return { ok: true, exposedOperations, serverTools };
   } finally {
     await client.close?.();

@@ -10,6 +10,7 @@ import {
   VERIFICATION_OVERRIDE_TAG
 } from "./soloVerification.js";
 import type { SoloTodo } from "./soloPlanning.js";
+import { defaultSolistConfig, setSolistRoleBinding } from "./solistConfig.js";
 import { 
   type SoloWorkerClient, 
   type SoloWorkerProcess, 
@@ -191,6 +192,30 @@ describe("Solo verification orchestration", () => {
     // Should have ONLY the verification-specific assignment
     expect(client.commentsAdded).toHaveLength(1);
     expect(client.commentsAdded[0].body).toContain(VERIFICATION_ASSIGNMENT_PREFIX);
+    expect(client.commentsAdded[0].body).toContain("role=verifier");
     expect(client.commentsAdded[0].body).not.toContain("Solist worker assignment:");
+  });
+
+  it("uses the configured verifier role binding when dispatching verification", async () => {
+    const client = new FakeWorkerClient([
+      { id: "codex", name: "Codex" },
+      { id: "codex-high", name: "Codex High" },
+    ], baseTodo);
+    const config = setSolistRoleBinding(defaultSolistConfig(), "verifier", {
+      agentToolName: "Codex High",
+    });
+
+    const result = await dispatchVerification(client, {
+      objective: "Verify the new verification path.",
+      scratchpadUri: "solo://proj/11/scratchpad/50",
+      todo: baseTodo,
+      ownershipBoundaries: [],
+      whatNotToChange: [],
+      expectedHandoff: [],
+      config,
+    });
+
+    expect(result.status).toBe("spawned");
+    expect(client.spawnCalls[0]?.runtimeId).toBe("codex-high");
   });
 });

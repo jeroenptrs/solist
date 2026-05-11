@@ -23,8 +23,10 @@ import { getSolistProviderAuthStatus } from "./harness/auth.js";
 import {
   checkSoloMcpReachability,
   createSoloMcpTools,
-  SOLO_MCP_EXPOSED_OPERATIONS,
+  getSoloMcpOperationsForProfile,
 } from "./soloMcpDirect.js";
+import { readSolistConfig } from "./solistConfig.js";
+import { getSolistMode } from "./solistModes.js";
 
 const hardeningReport = `Hardening active: ${SOLIST_HARDENING_FLAGS.join(", ")}`;
 
@@ -182,6 +184,7 @@ export async function checkPiSessionFeasibility(): Promise<FeasibilityResult> {
 }
 
 export async function checkHarnessRuntimeBoundary(): Promise<HarnessBoundaryCheckResult> {
+  const mode = getSolistMode(readSolistConfig().activeMode);
   const localReadOnlyTools = (await createSolistReadOnlyTools(process.cwd()))
     .map((tool) => tool.name);
   const expectedReadOnlyTools = [...SOLIST_READ_ONLY_TOOL_NAMES];
@@ -202,6 +205,7 @@ export async function checkHarnessRuntimeBoundary(): Promise<HarnessBoundaryChec
     mcpConfigSources = soloMcp.sourcePaths;
     mcpConfiguredServers = soloMcp.mergedServerNames;
     soloMcpTools = createSoloMcpTools(soloMcp, {
+      operations: getSoloMcpOperationsForProfile(mode.toolProfile),
       clientFactory: () => ({
         async listTools() {
           return [];
@@ -211,7 +215,9 @@ export async function checkHarnessRuntimeBoundary(): Promise<HarnessBoundaryChec
         },
       }),
     }).map((tool) => tool.name);
-    const reachability = await checkSoloMcpReachability(soloMcp);
+    const reachability = await checkSoloMcpReachability(soloMcp, {
+      operations: getSoloMcpOperationsForProfile(mode.toolProfile),
+    });
     soloMcpReachable = reachability.ok;
     soloMcpExposedOperations = reachability.exposedOperations;
     soloMcpServerTools = reachability.serverTools;
@@ -221,9 +227,9 @@ export async function checkHarnessRuntimeBoundary(): Promise<HarnessBoundaryChec
 
   const soloToolBoundaryOk = namesEqual(
     soloMcpTools,
-    SOLO_MCP_EXPOSED_OPERATIONS.map((operation) => `solo_mcp_${operation}`),
+    getSoloMcpOperationsForProfile(mode.toolProfile).map((operation) => `solo_mcp_${operation}`),
   );
-  const soloMcpOperationsAvailable = namesEqual(soloMcpExposedOperations, [...SOLO_MCP_EXPOSED_OPERATIONS]);
+  const soloMcpOperationsAvailable = namesEqual(soloMcpExposedOperations, [...getSoloMcpOperationsForProfile(mode.toolProfile)]);
   const ok = modelAvailable
     && providerAuth.configured
     && readOnlyToolsOk
@@ -235,8 +241,8 @@ export async function checkHarnessRuntimeBoundary(): Promise<HarnessBoundaryChec
   return {
     ok,
     runtime: "solist-harness",
-    model: SOLIST_MODEL_PATTERN,
-    thinkingLevel: SOLIST_THINKING_LEVEL,
+    model: `${mode.provider}/${mode.model}`,
+    thinkingLevel: mode.thinkingLevel,
     modelAvailable,
     providerAuthConfigured: providerAuth.configured,
     providerAuthSource: providerAuth.source,

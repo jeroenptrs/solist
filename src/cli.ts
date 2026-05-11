@@ -3,6 +3,7 @@ import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { fileURLToPath } from "node:url";
 import { stdin, stdout } from "node:process";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 // Temporary fallback note: keep the Pi wrapper import dynamic and isolated to
 // --legacy-wrapper until the fallback is removed after the harness has soaked.
 import type { main as piMainType } from "@earendil-works/pi-coding-agent";
@@ -25,9 +26,45 @@ import { writeSoloMcpRuntimeConfig } from "./soloMcp.js";
 import { solistStatusExtension } from "./statusExtension.js";
 import { createSolistReadOnlyTools } from "./harness/readOnlyTools.js";
 import { SolistHarness } from "./harness/SolistHarness.js";
-import { createSoloMcpToolSet } from "./soloMcpDirect.js";
+import {
+  createDirectSoloMcpClient,
+  createSoloMcpToolSet,
+  getSoloMcpOperationsForProfile,
+} from "./soloMcpDirect.js";
+import { createSolistRoleDispatchTool } from "./harness/roleDispatchTool.js";
 import { SolistInteractiveMode } from "./interactive/SolistInteractiveMode.js";
 import { isSolistInteractiveExitCommand } from "./interactive/SolistCommandRouter.js";
+import {
+  bindingForAgentTool,
+  getConfiguredSolistMode,
+  readSolistConfig,
+  resolveAgentToolSelection,
+  resolveRoleBinding,
+  setSolistActiveMode,
+  setSolistRoleBinding,
+  unsetSolistRoleBinding,
+  writeSolistConfig,
+  type SoloAgentToolReference,
+  type SolistConfig,
+} from "./solistConfig.js";
+import {
+  formatAgentToolChoices,
+  getCurrentSoloProjectId,
+  listSoloAgentTools,
+} from "./soloAgentTools.js";
+import {
+  SOLIST_MODE_IDS,
+  SOLIST_MODES,
+  getSolistMode,
+  isSolistModeId,
+  formatSolistMode,
+  type SolistModeId,
+} from "./solistModes.js";
+import {
+  SOLIST_ROLE_IDS,
+  SOLIST_ROLES,
+  resolveSolistRoleId,
+} from "./solistRoles.js";
 
 export const SOLIST_HARNESS_FLAG = "--harness";
 export const SOLIST_HARNESS_ENV = "SOLIST_HARNESS";
@@ -45,13 +82,25 @@ Usage:
                       Temporarily run the legacy Pi wrapper fallback
   solist --legacy-wrapper --check
                       Validate legacy Pi wrapper feasibility
+  solist mode get [--project <id|current>]
+                      Show the persisted Solist mode
+  solist mode set <mode> [--project <id|current>]
+                      Persist orchestration, analysis, or deep-analysis mode
+  solist roles list [--project <id|current>]
+                      Show orchestration subagent roles and configured Solo agent bindings
+  solist roles set <role> <agent id or exact name> [--project <id|current>]
+                      Persist a role-to-Solo-agent binding
+  solist roles unset <role> [--project <id|current>]
+                      Remove a persisted role binding
+  solist roles doctor [--project <id|current>]
+                      Validate persisted role bindings against Solo agent tools
   solist --help       Show this help
 
 Compatibility:
   ${SOLIST_HARNESS_FLAG} and ${SOLIST_HARNESS_ENV}=1 are accepted as no-op compatibility selectors for the default harness path.
   ${SOLIST_LEGACY_WRAPPER_FLAG} or ${SOLIST_LEGACY_WRAPPER_ENV}=1 selects the temporary legacy wrapper fallback.
 
-The default harness forces ${SOLIST_MODEL_PATTERN} with ${SOLIST_THINKING_LEVEL} reasoning, Solist-owned read-only local tools, and explicit Solo MCP tools.
+The default orchestration mode uses ${SOLIST_MODEL_PATTERN} with ${SOLIST_THINKING_LEVEL} reasoning, Solist-owned read-only local tools, and explicit Solo MCP tools.
 Interactive mode supports /login and /logout for Solist-owned Codex credentials in ~/.solist/auth.json.
 The default path does not call the Pi coding-agent main() wrapper.`;
 }
@@ -106,6 +155,9 @@ export async function run(): Promise<void> {
   }
 
   assertNoPolicyToolOverrides(args);
+  if (await maybeRunConfigCommand(stripRuntimeSelectorArgs(args))) {
+    return;
+  }
   if (useLegacyWrapper) await runLegacyWrapperPath(args);
   else await runHarnessPath(args);
 }
@@ -131,6 +183,88 @@ export function stripRuntimeSelectorArgs(args: readonly string[]): string[] {
   );
 }
 
+export async function maybeRunConfigCommand(args: readonly string[]): Promise<boolean> {
+  const [scope, action, ...rest] = args;
+  if (scope === "mode") {
+    await runModeCommand(action, rest);
+    return true;
+  }
+  if (scope === "roles") {
+    await runRolesCommand(action, rest);
+    return true;
+  }
+  return false;
+}
+
+async function runModeCommand(action = "get", args: readonly string[]): Promise<void> {
+  const config = readSolistConfig();
+  const scoped = await extractProjectOption(args);
+  if (action === "get") {
+    const mode = getSolistMode(getConfiguredSolistMode(config, scoped.projectId));
+    console.log(`${formatScopeLabel(scoped.projectId)} mode: ${formatSolistMode(mode)}`);
+    return;
+  }
+
+  if (action === "set") {
+    const [modeId] = scoped.args;
+    if (!modeId || !isSolistModeId(modeId)) {
+      throw new Error(`Expected mode: ${SOLIST_MODE_IDS.join(", ")}.`);
+    }
+    writeSolistConfig(setSolistActiveMode(config, modeId, scoped.projectId));
+    console.log(`Solist ${formatScopeLabel(scoped.projectId)} mode set to ${formatSolistMode(SOLIST_MODES[modeId])}.`);
+    return;
+  }
+
+  throw new Error("Usage: solist mode get [--project <id|current>] | solist mode set <orchestration|analysis|deep-analysis> [--project <id|current>]");
+}
+
+async function runRolesCommand(action = "list", args: readonly string[]): Promise<void> {
+  const config = readSolistConfig();
+  const scoped = await extractProjectOption(args);
+  if (action === "list") {
+    console.log(formatRolesList(config, scoped.projectId));
+    return;
+  }
+
+  if (action === "set") {
+    const [roleSelection, ...agentParts] = scoped.args;
+    const roleId = roleSelection ? resolveSolistRoleId(roleSelection) : undefined;
+    const agentSelection = agentParts.join(" ").trim();
+    if (!roleId || !agentSelection) {
+      throw new Error("Usage: solist roles set <role> <agent id or exact name> [--project <id|current>]");
+    }
+    const agentTools = await listSoloAgentTools();
+    const agentTool = resolveAgentToolSelection(agentSelection, agentTools);
+    if (!agentTool) {
+      throw new Error(
+        `No enabled Solo agent tool matched "${agentSelection}". Available: ${formatAgentToolChoices(agentTools)}.`,
+      );
+    }
+    writeSolistConfig(setSolistRoleBinding(config, roleId, bindingForAgentTool(agentTool), scoped.projectId));
+    console.log(`${formatScopeLabel(scoped.projectId)} role ${roleId} now maps to Solo agent ${agentTool.id} (${agentTool.name}).`);
+    return;
+  }
+
+  if (action === "unset") {
+    const [roleSelection] = scoped.args;
+    const roleId = roleSelection ? resolveSolistRoleId(roleSelection) : undefined;
+    if (!roleId) {
+      throw new Error("Usage: solist roles unset <role> [--project <id|current>]");
+    }
+    writeSolistConfig(unsetSolistRoleBinding(config, roleId, scoped.projectId));
+    console.log(`${formatScopeLabel(scoped.projectId)} role ${roleId} binding removed.`);
+    return;
+  }
+
+  if (action === "doctor") {
+    const agentTools = await listSoloAgentTools();
+    console.log(formatRolesDoctor(config, agentTools, scoped.projectId));
+    return;
+  }
+
+  throw new Error("Usage: solist roles list | set <role> <agent> | unset <role> | doctor [--project <id|current>]");
+}
+
 async function runHarnessPath(args: readonly string[]): Promise<void> {
   const prompt = stripRuntimeSelectorArgs(args).join(" ").trim()
     || (!stdin.isTTY ? await readPromptFromStdin() : "");
@@ -139,9 +273,17 @@ async function runHarnessPath(args: readonly string[]): Promise<void> {
   }
 
   if (stdin.isTTY) {
-    const harness = await createDefaultHarness({ write: () => undefined });
+    const interactiveOutput = { write: () => undefined };
+    const harness = await createDefaultHarness(interactiveOutput);
     try {
-      await runInteractiveChat(harness, prompt);
+      await runInteractiveChat(harness, prompt, {
+        createHarnessForMode: (modeId, context) =>
+          createDefaultHarness(interactiveOutput, {
+            modeOverride: modeId,
+            messages: [...context.messages],
+            projectId: context.projectId,
+          }),
+      });
     } finally {
       await harness.close();
     }
@@ -159,21 +301,164 @@ async function runHarnessPath(args: readonly string[]): Promise<void> {
   }
 }
 
-async function createDefaultHarness(output?: { write(chunk: string): void }): Promise<SolistHarness> {
+function formatRolesList(config: SolistConfig, projectId?: number | string): string {
+  const lines = [
+    `Solist orchestration roles (${formatScopeLabel(projectId)} effective bindings):`,
+    ...SOLIST_ROLE_IDS.map((roleId) => {
+      const projectBinding = projectId === undefined
+        ? undefined
+        : config.projectOverrides[String(projectId)]?.roleBindings?.[roleId];
+      const globalBinding = config.roleBindings[roleId];
+      const binding = projectBinding ?? globalBinding;
+      const bindingText = binding
+        ? ` -> ${formatRoleBinding(binding)} [${projectBinding ? "project" : "global"}]`
+        : "";
+      return `  ${roleId}: ${SOLIST_ROLES[roleId].description}${bindingText}`;
+    }),
+  ];
+  return lines.join("\n");
+}
+
+function formatRolesDoctor(
+  config: SolistConfig,
+  agentTools: readonly SoloAgentToolReference[],
+  projectId?: number | string,
+): string {
+  const lines = [
+    `Solist role binding doctor (${formatScopeLabel(projectId)}):`,
+    `Available Solo agent tools: ${formatAgentToolChoices(agentTools) || "none"}`,
+  ];
+  for (const roleId of SOLIST_ROLE_IDS) {
+    const resolution = resolveRoleBinding({
+      roleId,
+      config,
+      availableAgentTools: agentTools,
+      projectId,
+    });
+    if (resolution.status === "selected") {
+      lines.push(`  ${roleId}: ok -> ${resolution.agentTool.id} (${resolution.agentTool.name}) [${resolution.source}]`);
+    } else {
+      lines.push(`  ${roleId}: missing -> ${resolution.reason}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+function formatRoleBindingLines(config: SolistConfig, projectId?: number | string): string[] {
+  return SOLIST_ROLE_IDS.flatMap((roleId) => {
+    const binding = projectId === undefined
+      ? config.roleBindings[roleId]
+      : config.projectOverrides[String(projectId)]?.roleBindings?.[roleId]
+        ?? config.roleBindings[roleId];
+    return binding ? [`${roleId} -> ${formatRoleBinding(binding)}`] : [];
+  });
+}
+
+interface ProjectScopedArgs {
+  readonly args: readonly string[];
+  readonly projectId?: number | string;
+}
+
+async function extractProjectOption(args: readonly string[]): Promise<ProjectScopedArgs> {
+  const remaining: string[] = [];
+  let selector: string | undefined;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--project") {
+      const next = args[index + 1];
+      if (next === "current" || (next !== undefined && /^\d+$/.test(next))) {
+        selector = next;
+        index += 1;
+      } else {
+        selector = "current";
+      }
+      continue;
+    }
+    if (arg.startsWith("--project=")) {
+      selector = arg.slice("--project=".length) || "current";
+      continue;
+    }
+    remaining.push(arg);
+  }
+  return {
+    args: remaining,
+    projectId: selector === undefined ? undefined : await resolveProjectSelector(selector),
+  };
+}
+
+async function resolveProjectSelector(selector: string): Promise<number | string> {
+  if (selector === "current") {
+    const projectId = await getCurrentSoloProjectId();
+    if (projectId === undefined) {
+      throw new Error("Could not detect the current Solo project. Pass --project <id> explicitly.");
+    }
+    return projectId;
+  }
+  const numeric = Number(selector);
+  return Number.isInteger(numeric) && numeric > 0 ? numeric : selector;
+}
+
+function formatScopeLabel(projectId?: number | string): string {
+  return projectId === undefined ? "global" : `project ${projectId}`;
+}
+
+function formatRoleBinding(binding: {
+  readonly agentToolId?: number;
+  readonly agentToolName?: string;
+  readonly lastKnownName?: string;
+}): string {
+  if (binding.agentToolId !== undefined && binding.lastKnownName) {
+    return `${binding.agentToolId} (${binding.lastKnownName})`;
+  }
+  if (binding.agentToolId !== undefined) {
+    return String(binding.agentToolId);
+  }
+  return binding.agentToolName ?? binding.lastKnownName ?? "unconfigured";
+}
+
+interface CreateDefaultHarnessOptions {
+  readonly modeOverride?: SolistModeId;
+  readonly messages?: AgentMessage[];
+  readonly projectId?: number | string;
+}
+
+async function createDefaultHarness(
+  output?: { write(chunk: string): void },
+  options: CreateDefaultHarnessOptions = {},
+): Promise<SolistHarness> {
+  const config = readSolistConfig();
+  const projectId = await resolveDefaultHarnessProjectId(options.projectId);
+  const mode = getSolistMode(options.modeOverride ?? getConfiguredSolistMode(config, projectId));
   const soloMcp = writeSoloMcpRuntimeConfig();
   const readOnlyTools = await createSolistReadOnlyTools(process.cwd());
-  const soloMcpToolSet = createSoloMcpToolSet(soloMcp);
+  const soloMcpToolSet = createSoloMcpToolSet(soloMcp, {
+    operations: getSoloMcpOperationsForProfile(mode.toolProfile),
+  });
+  const roleDispatchClient = mode.canSpawnRoles
+    ? createDirectSoloMcpClient(soloMcp.config.mcpServers.solo)
+    : undefined;
   const tools = [
     ...readOnlyTools,
+    ...(roleDispatchClient
+      ? [createSolistRoleDispatchTool(roleDispatchClient, { projectId })]
+      : []),
     ...soloMcpToolSet.tools,
   ];
   return new SolistHarness({
-    modelRef: { provider: SOLIST_MODEL_PROVIDER, model: SOLIST_MODEL_ID },
-    thinkingLevel: SOLIST_THINKING_LEVEL,
-    systemPrompt: buildSolistSystemPrompt(["solo"]),
+    modelRef: { provider: mode.provider, model: mode.model },
+    thinkingLevel: mode.thinkingLevel,
+    systemPrompt: buildSolistSystemPrompt({
+      mcpAllowlist: ["solo"],
+      mode,
+      roleBindingLines: formatRoleBindingLines(config, projectId),
+    }),
     tools,
-    disposables: [() => soloMcpToolSet.close()],
+    disposables: [
+      () => soloMcpToolSet.close(),
+      ...(roleDispatchClient ? [() => roleDispatchClient.close?.()] : []),
+    ],
     output,
+    messages: options.messages,
   });
 }
 
@@ -184,8 +469,22 @@ export function isInteractiveExitCommand(input: string): boolean {
 export async function runInteractiveChat(
   harness: SolistHarness,
   initialPrompt = "",
+  options: ConstructorParameters<typeof SolistInteractiveMode>[1] = {},
 ): Promise<void> {
-  await new SolistInteractiveMode(harness).run(initialPrompt);
+  await new SolistInteractiveMode(harness, options).run(initialPrompt);
+}
+
+async function resolveDefaultHarnessProjectId(
+  projectId?: number | string,
+): Promise<number | string | undefined> {
+  if (projectId !== undefined) {
+    return projectId;
+  }
+  try {
+    return await getCurrentSoloProjectId();
+  } catch {
+    return undefined;
+  }
 }
 
 async function runLegacyWrapperPath(args: readonly string[]): Promise<void> {

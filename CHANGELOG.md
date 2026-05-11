@@ -11,6 +11,7 @@
 - **Solist Auth Commands**: Added Solist-owned `/login` and `/logout` commands for the pinned `openai-codex` provider.
 - **Read-Only Tools**: Implemented native read-only filesystem tools (`read`, `ls`, `find`, `grep`) within the harness to eliminate full SDK dependencies and enforce strict access boundaries.
 - **Direct Solo MCP Integration**: Added `SoloMcpDirect` for low-level, high-performance communication with Solo MCP, bypassing the generic MCP proxy for core operations.
+- **Modes and Role Bindings**: Added persisted Solist mode configuration, high-reasoning analysis modes, orchestration role registry, implementation complexity roles, role-to-Solo-agent binding commands, and conversation-scoped role switching.
 - **Hardening Stopgap**: Implemented orchestrator policy enforcement, including blocked runtime flags and Solo-only MCP allowlisting, to ensure session integrity during the transition.
 - **Review Follow-ups**: Hardened tool resolution, improved feasibility diagnostics, and synchronized internal reasoning-level settings.
 
@@ -21,7 +22,7 @@
 
 ### Features
 - Implemented `--check` flag for non-interactive environment and model feasibility validation.
-- Defined orchestrator policy: `openai-codex/gpt-5.5` using provider `openai-codex`, model `gpt-5.5`, and `off` reasoning.
+- Defined orchestrator policy: `openai-codex/gpt-5.5` using provider `openai-codex`, model `gpt-5.5`, and default orchestration `off` reasoning.
 - Restricted orchestrator startup to read-only local filesystem tools plus the Solo MCP proxy.
 - Added Solo-only MCP enforcement, including default `solo` allowlist, non-Solo rejection, and runtime override blocking.
 - Added eager Solo MCP boot wiring by generating a temporary solo-only Pi MCP config and passing it via `--mcp-config`.

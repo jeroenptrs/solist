@@ -31,6 +31,31 @@ import {
 import { SOLIST_MODEL_PROVIDER } from "../solistPrompt.js";
 import { getSolistAuthPath } from "../solistPaths.js";
 import {
+	bindingForAgentTool,
+	getConfiguredSolistMode,
+	readSolistConfig,
+	resolveAgentToolSelection,
+	resolveRoleBinding,
+	setSolistActiveMode,
+	setSolistRoleBinding,
+	unsetSolistRoleBinding,
+	writeSolistConfig,
+	type SolistRoleBindings,
+} from "../solistConfig.js";
+import {
+	formatAgentToolChoices,
+	getCurrentSoloProjectId,
+	listSoloAgentTools,
+} from "../soloAgentTools.js";
+import {
+	SOLIST_MODE_IDS,
+	formatSolistMode,
+	getSolistMode,
+	isSolistModeId,
+	type SolistModeId,
+} from "../solistModes.js";
+import { SOLIST_ROLE_IDS, SOLIST_ROLES, resolveSolistRoleId } from "../solistRoles.js";
+import {
 	isExactSolistInteractiveCommand,
 	routeSolistInteractiveInput,
 	SOLIST_INTERACTIVE_COMMANDS,
@@ -60,6 +85,11 @@ export interface SolistInteractiveModeOptions {
 	cwd?: string;
 	soloMcpAvailable?: boolean;
 	showWelcome?: boolean;
+	createHarnessForMode?: (
+		modeId: SolistModeId,
+		context: { messages: readonly AgentMessage[]; projectId?: number | string },
+	) => Promise<SolistInteractiveHarness>;
+	resolveProjectId?: (selector: string) => Promise<number | string | undefined>;
 }
 
 export class SolistInteractiveMode {
@@ -67,6 +97,8 @@ export class SolistInteractiveMode {
 	private readonly cwd: string;
 	private readonly soloMcpAvailable: boolean;
 	private readonly showWelcome: boolean;
+	private readonly createHarnessForMode?: SolistInteractiveModeOptions["createHarnessForMode"];
+	private readonly resolveProjectId: (selector: string) => Promise<number | string | undefined>;
 	private readonly ui: TUI;
 	private readonly chat = new Container();
 	private readonly status = new Container();
@@ -81,6 +113,7 @@ export class SolistInteractiveMode {
 	private activeAuth = false;
 	private activeAuthAbort?: AbortController;
 	private activeAuthInput?: AuthInputWaiter;
+	private sessionRoleOverrides: SolistRoleBindings = {};
 	private currentAssistant?: {
 		text: string;
 		component: Markdown;
@@ -88,13 +121,15 @@ export class SolistInteractiveMode {
 	};
 
 	constructor(
-		private readonly harness: SolistInteractiveHarness,
+		private harness: SolistInteractiveHarness,
 		options: SolistInteractiveModeOptions = {},
 	) {
 		this.terminal = options.terminal ?? new ProcessTerminal();
 		this.cwd = options.cwd ?? process.cwd();
 		this.soloMcpAvailable = options.soloMcpAvailable ?? true;
 		this.showWelcome = options.showWelcome ?? true;
+		this.createHarnessForMode = options.createHarnessForMode;
+		this.resolveProjectId = options.resolveProjectId ?? resolveDefaultProjectId;
 		this.ui = new TUI(this.terminal);
 		this.editor = new Editor(this.ui, defaultEditorTheme, { paddingX: 1 });
 	}
@@ -191,6 +226,18 @@ export class SolistInteractiveMode {
 			this.addSystemMessage(route.message);
 			return;
 		}
+		if (route.kind === "mode") {
+			await this.handleModeCommand(route.mode, route.project);
+			return;
+		}
+		if (route.kind === "roles") {
+			await this.handleRolesCommand(route.action, route.project);
+			return;
+		}
+		if (route.kind === "role") {
+			await this.handleRoleCommand(route.action, route.role, route.agent, route.project);
+			return;
+		}
 		if (route.kind === "login") {
 			await this.handleLoginCommand(route.provider);
 			return;
@@ -226,7 +273,7 @@ export class SolistInteractiveMode {
 		this.setAgentState("thinking");
 
 		try {
-			await this.harness.run(prompt);
+			await this.harness.run(this.withSessionRoleOverrides(prompt));
 		} catch (error) {
 			if (this.interruptRequested) {
 				this.addSystemMessage("Active turn stopped.");
@@ -244,6 +291,210 @@ export class SolistInteractiveMode {
 			this.ui.setFocus(this.editor);
 			this.ui.requestRender();
 		}
+	}
+
+	private async handleModeCommand(modeArg?: string, projectSelector?: string): Promise<void> {
+		if (this.activeTurn || this.activeAuth) {
+			this.addSystemMessage("Wait for the current turn or authentication flow to finish before changing mode.");
+			return;
+		}
+		let projectId: number | string | undefined;
+		try {
+			projectId = await this.resolveProjectSelector(projectSelector);
+		} catch (error) {
+			this.addSystemMessage(error instanceof Error ? error.message : String(error));
+			return;
+		}
+		const config = readSolistConfig();
+		if (!modeArg) {
+			const mode = getSolistMode(getConfiguredSolistMode(config, projectId));
+			this.addSystemMessage(`Current ${formatScopeLabel(projectId)} mode: ${formatSolistMode(mode)}`);
+			return;
+		}
+		if (!isSolistModeId(modeArg)) {
+			this.addSystemMessage(`Expected mode: ${SOLIST_MODE_IDS.join(", ")}.`);
+			return;
+		}
+		writeSolistConfig(setSolistActiveMode(config, modeArg, projectId));
+		if (!this.createHarnessForMode) {
+			this.addSystemMessage(
+				`Persisted ${formatScopeLabel(projectId)} mode ${formatSolistMode(getSolistMode(modeArg))}. Restart Solist for this running session to use the new model, reasoning, prompt, and tool profile.`,
+			);
+			return;
+		}
+		try {
+			await this.switchHarnessMode(modeArg, projectId);
+			this.addSystemMessage(`Switched running session and persisted ${formatScopeLabel(projectId)} mode ${formatSolistMode(getSolistMode(modeArg))}.`);
+		} catch (error) {
+			this.addSystemMessage(
+				`Mode switch failed after persisting config: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
+
+	private async handleRolesCommand(
+		action: "list" | "doctor" = "list",
+		projectSelector?: string,
+	): Promise<void> {
+		let projectId: number | string | undefined;
+		try {
+			projectId = await this.resolveProjectSelector(projectSelector);
+		} catch (error) {
+			this.addSystemMessage(error instanceof Error ? error.message : String(error));
+			return;
+		}
+		const config = readSolistConfig();
+		if (action === "doctor") {
+			try {
+				const agentTools = await listSoloAgentTools();
+				const lines = [
+					`Solist role binding doctor (${formatScopeLabel(projectId)}):`,
+					`Available Solo agent tools: ${formatAgentToolChoices(agentTools) || "none"}`,
+				];
+				for (const roleId of SOLIST_ROLE_IDS) {
+					const resolution = resolveRoleBinding({
+						roleId,
+						config,
+						availableAgentTools: agentTools,
+						projectId,
+						sessionOverrides: this.sessionRoleOverrides,
+					});
+					if (resolution.status === "selected") {
+						lines.push(`  ${roleId}: ok -> ${resolution.agentTool.id} (${resolution.agentTool.name}) [${resolution.source}]`);
+					} else {
+						lines.push(`  ${roleId}: missing -> ${resolution.reason}`);
+					}
+				}
+				this.addSystemMessage(lines.join("\n"));
+			} catch (error) {
+				this.addSystemMessage(
+					`Roles doctor failed: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+			return;
+		}
+		const lines = [
+			`Solist orchestration roles (${formatScopeLabel(projectId)} effective bindings):`,
+			...SOLIST_ROLE_IDS.map((roleId) => {
+				const projectBinding = projectId === undefined
+					? undefined
+					: config.projectOverrides[String(projectId)]?.roleBindings?.[roleId];
+				const globalBinding = config.roleBindings[roleId];
+				const binding = projectBinding ?? globalBinding;
+				const override = this.sessionRoleOverrides[roleId];
+				const suffix = override
+					? ` session override -> ${formatRoleBinding(override)}`
+					: binding
+						? ` -> ${formatRoleBinding(binding)} [${projectBinding ? "project" : "global"}]`
+						: "";
+				return `  ${roleId}: ${SOLIST_ROLES[roleId].description}${suffix}`;
+			}),
+		];
+		this.addSystemMessage(lines.join("\n"));
+	}
+
+	private async handleRoleCommand(
+		action: "set" | "unset" | "override" | "switch",
+		roleSelection?: string,
+		agentSelection?: string,
+		projectSelector?: string,
+	): Promise<void> {
+		if (this.activeTurn || this.activeAuth) {
+			this.addSystemMessage("Wait for the current turn or authentication flow to finish before changing role bindings.");
+			return;
+		}
+		const roleId = roleSelection ? resolveSolistRoleId(roleSelection) : undefined;
+		if (!roleId) {
+			this.addSystemMessage("Unknown role. Use /roles to list available role ids.");
+			return;
+		}
+		let projectId: number | string | undefined;
+		try {
+			projectId = await this.resolveProjectSelector(projectSelector);
+		} catch (error) {
+			this.addSystemMessage(error instanceof Error ? error.message : String(error));
+			return;
+		}
+
+		if (action === "unset") {
+			const config = readSolistConfig();
+			writeSolistConfig(unsetSolistRoleBinding(config, roleId, projectId));
+			const { [roleId]: _removed, ...rest } = this.sessionRoleOverrides;
+			this.sessionRoleOverrides = rest;
+			this.addSystemMessage(`${formatScopeLabel(projectId)} role ${roleId} binding removed.`);
+			return;
+		}
+
+		if (!agentSelection) {
+			this.addSystemMessage(`Usage: /role ${action} <role> <agent id or exact name>`);
+			return;
+		}
+
+		try {
+			const agentTools = await listSoloAgentTools();
+			const agentTool = resolveAgentToolSelection(agentSelection, agentTools);
+			if (!agentTool) {
+				this.addSystemMessage(
+					`No enabled Solo agent tool matched "${agentSelection}". Available: ${formatAgentToolChoices(agentTools)}.`,
+				);
+				return;
+			}
+			const binding = bindingForAgentTool(agentTool);
+			if (action === "override" || action === "switch") {
+				this.sessionRoleOverrides = { ...this.sessionRoleOverrides, [roleId]: binding };
+				this.addSystemMessage(`Session role switch: role ${roleId} maps to Solo agent ${agentTool.id} (${agentTool.name}).`);
+				return;
+			}
+			const config = readSolistConfig();
+			writeSolistConfig(setSolistRoleBinding(config, roleId, binding, projectId));
+			this.addSystemMessage(`${formatScopeLabel(projectId)} role ${roleId} now maps to Solo agent ${agentTool.id} (${agentTool.name}).`);
+		} catch (error) {
+			this.addSystemMessage(
+				`Role command failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
+
+	private async switchHarnessMode(modeId: SolistModeId, projectId?: number | string): Promise<void> {
+		if (!this.createHarnessForMode) return;
+		const previousHarness = this.harness;
+		const previousUnsubscribe = this.unsubscribe;
+		const nextHarness = await this.createHarnessForMode(modeId, {
+			messages: previousHarness.messages,
+			projectId,
+		});
+		previousUnsubscribe?.();
+		this.harness = nextHarness;
+		this.unsubscribe = nextHarness.subscribe((event) => this.renderEvent(event));
+		await previousHarness.close?.();
+		this.setStatusState("Ready");
+		this.setAgentState("idle");
+		this.ui.requestRender();
+	}
+
+	private async resolveProjectSelector(selector?: string): Promise<number | string | undefined> {
+		if (!selector) {
+			return undefined;
+		}
+		const projectId = await this.resolveProjectId(selector);
+		if (projectId === undefined) {
+			throw new Error("Could not detect the current Solo project. Use --project=<id> explicitly.");
+		}
+		return projectId;
+	}
+
+	private withSessionRoleOverrides(prompt: string): string {
+		const lines = Object.entries(this.sessionRoleOverrides).map(([roleId, binding]) =>
+			`- ${roleId} -> ${formatRoleBinding(binding)}`);
+		if (lines.length === 0) {
+			return prompt;
+		}
+		return [
+			"Session role overrides for this Solist process:",
+			...lines,
+			"",
+			prompt,
+		].join("\n");
 	}
 
 	private getCommandContext(): SolistInteractiveCommandContext {
@@ -744,6 +995,32 @@ function colorAgentState(state: AgentActivityState): string {
 	if (state === "thinking") return color.warning(text);
 	if (state === "streaming") return color.accent(text);
 	return color.warning(text);
+}
+
+function formatRoleBinding(binding: {
+	readonly agentToolId?: number;
+	readonly agentToolName?: string;
+	readonly lastKnownName?: string;
+}): string {
+	if (binding.agentToolId !== undefined && binding.lastKnownName) {
+		return `${binding.agentToolId} (${binding.lastKnownName})`;
+	}
+	if (binding.agentToolId !== undefined) {
+		return String(binding.agentToolId);
+	}
+	return binding.agentToolName ?? binding.lastKnownName ?? "unconfigured";
+}
+
+function formatScopeLabel(projectId?: number | string): string {
+	return projectId === undefined ? "global" : `project ${projectId}`;
+}
+
+async function resolveDefaultProjectId(selector: string): Promise<number | string | undefined> {
+	if (selector === "current") {
+		return getCurrentSoloProjectId();
+	}
+	const numeric = Number(selector);
+	return Number.isInteger(numeric) && numeric > 0 ? numeric : selector;
 }
 
 function getSolistAsciiArt(): readonly string[] {

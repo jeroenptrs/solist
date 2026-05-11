@@ -1,6 +1,6 @@
 # Session and State Strategy
 
-This document outlines how `solist` manages orchestration state and conversation history.
+This document outlines how `solist` manages orchestration state, mode configuration, role bindings, and conversation history.
 
 ## Durable Planning State
 
@@ -58,5 +58,39 @@ A lightweight, local session store may be added in a future work package only if
 | Task Status | Solo | Todo (Status/Completion) |
 | Worker Evidence | Solo | Todo Comments |
 | Blockers/Deps | Solo | Todo Blockers |
+| Active Mode | Solist | `~/.solist/config.json` or `SOLIST_CONFIG_PATH` |
+| Role Bindings | Solist | `~/.solist/config.json` or `SOLIST_CONFIG_PATH` |
 | Conversation History | Solist | In-Memory (Transient) |
 | Active Processes | Solo | Solo Processes |
+
+## Local Solist Configuration
+
+Mode selection and role-to-Solo-agent bindings are Solist runtime configuration, not durable orchestration state. They live in `~/.solist/config.json` by default, or in `SOLIST_CONFIG_PATH` when that environment variable is set.
+
+Both active mode and role bindings can be global or project-scoped. Use `--project current`, `--project <id>`, `/mode ... --project`, or `/role set ... --project` when a mapping should apply only to one Solo project.
+
+### Active Mode
+
+The active mode controls the main Solist harness profile:
+
+- `orchestration`: `openai-codex/gpt-5.5`, `off` reasoning, full Solo orchestration tools, role spawning enabled.
+- `analysis`: `openai-codex/gpt-5.5`, `high` reasoning, full Solo MCP tool surface, role spawning disabled by mode policy.
+- `deep-analysis`: `openai-codex/gpt-5.5`, `xhigh` reasoning, full Solo MCP tool surface, role spawning disabled by mode policy.
+
+Changing the persisted mode in the default interactive Solist path also rebuilds the running harness immediately with the selected model, reasoning level, prompt, and role-dispatch surface. Durable plan state remains in Solo regardless of mode.
+
+### Role Bindings
+
+Role bindings map orchestration roles such as `patch-worker`, `feature-worker`, `refactor-worker`, `reviewer`, and `verifier` to Solo agent tools returned by `list_agent_tools`.
+
+Resolution order during orchestration is:
+
+1. Session override.
+2. Project override.
+3. Global default binding.
+
+The role vocabulary and binding configuration are local Solist state. Worker assignments, handoffs, blocker updates, and verification evidence still belong in Solo todos and scratchpads.
+
+Interactive `/role-switch` and `/role override` commands create session-only role bindings. They affect later prompts in the same running Solist process, but they are not written to the config file unless the user uses `/role set` or the headless `solist roles set` command.
+
+In orchestration mode, `solist_dispatch_role` is the preferred worker handoff path. It resolves the role binding, spawns the configured Solo agent, sends the role-framed assignment, and records the assignment comment on the Solo todo. Verification dispatch uses the same role-binding resolution path for the `verifier` role.

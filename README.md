@@ -12,7 +12,7 @@ The primary goal of `solist` is to provide a safe and efficient way to leverage 
 - **Solo**: A running instance of Solo with the Solo MCP server enabled.
 - **Solo MCP configuration**: a configured `solo` MCP server, preferably in `~/.solist/mcp.json`. The stripped Solist harness connects to Solo MCP directly; the legacy wrapper path still validates a Solo-only Pi MCP config.
 - **Codex credentials**: `openai-codex` credentials in Solist's auth store, normally `~/.solist/auth.json` after running `/login` inside Solist.
-- **Model Access**: Access to `openai-codex/gpt-5.5` with `off` reasoning is required.
+- **Model Access**: Access to `openai-codex/gpt-5.5` is required. Orchestration uses `off` reasoning; analysis modes use `high` and `xhigh`.
 
 ## Installation
 
@@ -62,7 +62,7 @@ With a global install, the equivalent command is:
 solist "Inspect todo 207 and propose the next Solo worker handoff"
 ```
 
-Inside the chat, press `/` at the start of the prompt to open the command overview, type `/help` for the Solist command set, use `/login` / `/logout` to manage Solist's Codex credentials, or use `/exit` / `/quit` to stop the process. Assistant responses, tool calls, and tool completion events render in the same chat surface above the editor. The status line shows the current state, model, reasoning level, message count, tool count, Solo MCP availability, and cwd.
+Inside the chat, press `/` at the start of the prompt to open the command overview, type `/help` for the Solist command set, use `/login` / `/logout` to manage Solist's Codex credentials, `/mode` to inspect or persist the active mode, `/roles` and `/role set` to manage role-to-Solo-agent bindings, or `/exit` / `/quit` to stop the process. Assistant responses, tool calls, and tool completion events render in the same chat surface above the editor. The status line shows the current state, model, reasoning level, message count, tool count, Solo MCP availability, and cwd.
 
 You can also provide a prompt on stdin when no prompt arguments are present. Piped stdin is non-interactive, so Solist treats it as a batch prompt and exits after the response:
 
@@ -94,11 +94,11 @@ Verify the default harness boundary without launching a run:
 pnpm run solist -- --check
 ```
 
-`solist --check` validates that the required model is available, provider auth is configured, Solo MCP configuration resolves and is reachable, the local tool set is exactly the read-only inspection tools, and the explicit Solo MCP operation wrappers match the expected allowlist.
+`solist --check` validates that the active mode's required model is available, provider auth is configured, Solo MCP configuration resolves and is reachable, the local tool set is exactly the read-only inspection tools, and the explicit Solo MCP operation wrappers match the expected allowlist for that mode.
 
 ### Codex Authentication
 
-Solist is pinned to the `openai-codex/gpt-5.5` provider/model pair. That provider uses Codex OAuth/subscription auth through Pi's exported auth primitives, not the regular OpenAI API-key provider.
+Solist modes currently use the `openai-codex/gpt-5.5` provider/model pair. That provider uses Codex OAuth/subscription auth through Pi's exported auth primitives, not the regular OpenAI API-key provider.
 
 Authenticate once through Solist:
 
@@ -143,7 +143,83 @@ Solist-owned credentials and primary MCP configuration live under `~/.solist` by
 SOLIST_HOME=/path/to/solist-home solist
 SOLIST_AUTH_PATH=/path/to/auth.json solist
 SOLIST_MCP_CONFIG=/path/to/mcp.json solist
+SOLIST_CONFIG_PATH=/path/to/config.json solist
 ```
+
+### Modes
+
+Solist persists its active mode in `~/.solist/config.json` unless `SOLIST_CONFIG_PATH` is set.
+
+| Mode | Model | Reasoning | Tool profile | Worker roles |
+|------|-------|-----------|--------------|--------------|
+| `orchestration` | `openai-codex/gpt-5.5` | `off` | Full Solo orchestration wrappers | Enabled |
+| `analysis` | `openai-codex/gpt-5.5` | `high` | Full Solo orchestration wrappers | Disabled |
+| `deep-analysis` | `openai-codex/gpt-5.5` | `xhigh` | Full Solo orchestration wrappers | Disabled |
+
+Manage modes interactively:
+
+```text
+/mode
+/mode analysis
+/mode deep-analysis --project
+```
+
+Or headlessly:
+
+```bash
+solist mode get
+solist mode set deep-analysis
+solist mode get --project current
+solist mode set orchestration --project 11
+```
+
+Changing mode in a running interactive session persists the setting and switches the active harness immediately when Solist is running in the default interactive path. Use `--project current` or `--project <id>` to store a project override instead of changing the global default.
+
+### Role Bindings
+
+Subagent roles are available only in `orchestration` mode. They are prompt frames for Solo-spawned child agents; the concrete Solo agent tool is configured separately.
+
+Initial orchestration roles:
+
+- `code-searcher`: read-only codebase retrieval and impact mapping.
+- `patch-worker`: small localized implementation changes.
+- `feature-worker`: coherent multi-file feature slices.
+- `refactor-worker`: structural or compatibility-sensitive implementation work.
+- `test-worker`: test and reproduction coverage.
+- `reviewer`: review-only bug, regression, and missing-test inspection.
+- `verifier`: independent validation before completion.
+- `docs-writer`: README, changelog, migration notes, and human-facing docs.
+
+Manage role mappings interactively:
+
+```text
+/roles
+/roles doctor
+/roles --project
+/role set reviewer Gemini
+/role set patch-worker Codex
+/role set feature-worker "Codex High"
+/role set refactor-worker "Codex XHigh"
+/role set reviewer Gemini --project
+/role override verifier "Codex High"
+/role switch reviewer Gemini
+/role-switch verifier "Codex High"
+```
+
+Or headlessly:
+
+```bash
+solist roles list
+solist roles set reviewer Gemini
+solist roles unset reviewer
+solist roles doctor
+solist roles list --project current
+solist roles set verifier "Codex High" --project 11
+```
+
+Role bindings are validated against Solo's configured agent tools via `list_agent_tools`. `/role-switch` and `/role override` affect prompts submitted later in the same Solist process; persisted bindings live in Solist config.
+
+When roles are enabled, the orchestrator gets a Solist-owned `solist_dispatch_role` tool. It resolves the configured global, project, or session-provided Solo agent choice, spawns the Solo agent, sends the role-framed assignment with `send_input`, and records the assignment comment on the Solo todo. The raw `solo_mcp_spawn_process` and `solo_mcp_send_input` tools remain available for handoff shapes that need lower-level control.
 
 ### MCP Allowlist
 
@@ -154,7 +230,7 @@ SOLIST_MCP_CONFIG=/path/to/mcp.json solist
 SOLIST_MCP_ALLOWLIST=solo pnpm run solist
 ```
 
-At launch, `solist` validates the merged MCP config and rejects any non-`solo` server. The stripped harness looks for MCP config in `~/.solist/mcp.json`, `~/.config/mcp/mcp.json`, project `.mcp.json`, and project `.solist/mcp.json` by default. Set `SOLIST_MCP_CONFIG=/path/to/mcp.json` to override the primary config path. The stripped harness exposes typed tools named `solo_mcp_<operation>` that map directly to Solo MCP operations such as `todo_get`, `scratchpad_read`, `spawn_process`, and timer/process output tools. Broad or destructive Solo MCP operations are not exposed through the orchestrator surface.
+At launch, `solist` validates the merged MCP config and rejects any non-`solo` server. The stripped harness looks for MCP config in `~/.solist/mcp.json`, `~/.config/mcp/mcp.json`, project `.mcp.json`, and project `.solist/mcp.json` by default. Set `SOLIST_MCP_CONFIG=/path/to/mcp.json` to override the primary config path. The stripped harness exposes typed tools named `solo_mcp_<operation>` that map directly to Solo MCP operations such as `todo_get`, `scratchpad_read`, `spawn_process`, `send_input`, and timer/process output tools. Broad or destructive Solo MCP operations are not exposed through the orchestrator surface.
 
 The default harness path resolves the Solo-only MCP config and exposes only Solist-owned read-only local tools plus explicit Solo MCP operation wrappers. It does not use a persistent local session store; durable orchestration state belongs in Solo and conversation history remains in memory for the current run.
 
@@ -172,7 +248,7 @@ pi install npm:pi-mcp-adapter
 
 - **Human-Initiated Interactive Sessions**: V1 runs as a persistent terminal chat when attached to a TTY, including Solo agent processes. Piped stdin remains a non-interactive batch prompt path. Solist is not a daemon or unattended automation service.
 - **Solo-Centric**: All durable state—plans, todos, blockers, and worker handoffs—lives exclusively in Solo. `solist` does not maintain its own database.
-- **Fixed Model**: The orchestrator is locked to `openai-codex/gpt-5.5` with `off` reasoning.
+- **Mode Profiles**: The default orchestrator mode uses `openai-codex/gpt-5.5` with `off` reasoning. Analysis modes use the same model with `high` or `xhigh` reasoning and the same Solo MCP tool surface, but role-bound worker spawning is disabled by mode policy.
 - **Read-Only Target**: The orchestrator session is restricted to read-only local file inspection plus explicit Solo MCP operations.
 - **Solo-Only MCP Target**: The orchestrator validates Pi MCP config at startup and refuses to run if any non-`solo` server would be exposed.
 

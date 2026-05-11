@@ -50,6 +50,10 @@ describe("SolistCommandRouter", () => {
 			expect.objectContaining({ name: "clear", description: expect.any(String) }),
 			expect.objectContaining({ name: "tools", description: expect.any(String) }),
 			expect.objectContaining({ name: "status", description: expect.any(String) }),
+			expect.objectContaining({ name: "mode", description: expect.any(String) }),
+			expect.objectContaining({ name: "roles", description: expect.any(String) }),
+			expect.objectContaining({ name: "role", description: expect.any(String) }),
+			expect.objectContaining({ name: "role-switch", description: expect.any(String) }),
 			expect.objectContaining({ name: "login", description: expect.any(String) }),
 			expect.objectContaining({ name: "logout", description: expect.any(String) }),
 		]);
@@ -64,12 +68,79 @@ describe("SolistCommandRouter", () => {
 		expect(isExactSolistInteractiveCommand("/quit")).toBe(true);
 		expect(isExactSolistInteractiveCommand("quit")).toBe(true);
 		expect(isExactSolistInteractiveCommand("/status")).toBe(true);
+		expect(isExactSolistInteractiveCommand("/mode")).toBe(true);
+		expect(isExactSolistInteractiveCommand("/roles")).toBe(true);
+		expect(isExactSolistInteractiveCommand("/role-switch")).toBe(true);
 		expect(isExactSolistInteractiveCommand("/login")).toBe(true);
 		expect(isExactSolistInteractiveCommand("/logout")).toBe(true);
 		expect(isExactSolistInteractiveCommand("/sta")).toBe(false);
 		expect(isExactSolistInteractiveCommand("/status now")).toBe(false);
+		expect(isExactSolistInteractiveCommand("/role set reviewer Gemini")).toBe(false);
+		expect(isExactSolistInteractiveCommand("/role-switch reviewer Gemini")).toBe(false);
 		expect(isExactSolistInteractiveCommand("/login openai-codex")).toBe(false);
 		expect(isExactSolistInteractiveCommand("/model")).toBe(false);
+	});
+
+	it("routes mode and role commands", () => {
+		expect(routeSolistInteractiveInput("/mode", context)).toEqual({
+			kind: "mode",
+			mode: undefined,
+			project: undefined,
+		});
+		expect(routeSolistInteractiveInput("/mode analysis", context)).toEqual({
+			kind: "mode",
+			mode: "analysis",
+			project: undefined,
+		});
+		expect(routeSolistInteractiveInput("/mode analysis --project", context)).toEqual({
+			kind: "mode",
+			mode: "analysis",
+			project: "current",
+		});
+		expect(routeSolistInteractiveInput("/roles", context)).toEqual({
+			kind: "roles",
+			action: "list",
+			project: undefined,
+		});
+		expect(routeSolistInteractiveInput("/roles doctor --project=11", context)).toEqual({
+			kind: "roles",
+			action: "doctor",
+			project: "11",
+		});
+		expect(routeSolistInteractiveInput("/role set reviewer Gemini", context)).toEqual({
+			kind: "role",
+			action: "set",
+			role: "reviewer",
+			agent: "Gemini",
+			project: undefined,
+		});
+		expect(routeSolistInteractiveInput("/role unset reviewer", context)).toEqual({
+			kind: "role",
+			action: "unset",
+			role: "reviewer",
+			project: undefined,
+		});
+		expect(routeSolistInteractiveInput("/role switch reviewer Gemini", context)).toEqual({
+			kind: "role",
+			action: "switch",
+			role: "reviewer",
+			agent: "Gemini",
+			project: undefined,
+		});
+		expect(routeSolistInteractiveInput("/role-switch reviewer Gemini", context)).toEqual({
+			kind: "role",
+			action: "switch",
+			role: "reviewer",
+			agent: "Gemini",
+			project: undefined,
+		});
+		expect(routeSolistInteractiveInput("/role set --project reviewer Gemini", context)).toEqual({
+			kind: "role",
+			action: "set",
+			role: "reviewer",
+			agent: "Gemini",
+			project: "current",
+		});
 	});
 
 	it("routes Solist-owned auth commands", () => {

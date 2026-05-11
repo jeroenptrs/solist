@@ -1,11 +1,16 @@
 import type { SoloTodo } from "./soloPlanning.js";
 import {
+  type SolistConfig,
+  type SolistRoleBindings
+} from "./solistConfig.js";
+import {
   type SoloWorkerClient,
   type SoloWorkerProcess,
   type SoloWorkerRuntime,
   type WorkerDispatchResult,
-  selectWorkerRuntime
+  selectWorkerRuntimeForDispatch
 } from "./soloWorkers.js";
+import { SOLIST_ROLES } from "./solistRoles.js";
 
 export interface VerificationStatus {
   state: "not-started" | "assigned" | "verified" | "blocked";
@@ -24,6 +29,9 @@ export interface VerificationRequest {
   runtimeSelection?: string;
   workerName?: string;
   implementationEvidence?: string;
+  config?: SolistConfig;
+  projectId?: number | string;
+  sessionRoleOverrides?: SolistRoleBindings;
 }
 
 export const VERIFICATION_ASSIGNMENT_PREFIX = "Solist verification assignment:";
@@ -83,6 +91,7 @@ export function isReadyForCompletion(todo: SoloTodo): { ready: boolean; reason?:
 }
 
 export function buildVerifierPrompt(request: VerificationRequest): string {
+  const role = SOLIST_ROLES.verifier;
   const lines = [
     `Objective: Verify and review implementation for "${request.todo.title}".`,
     "",
@@ -96,7 +105,11 @@ export function buildVerifierPrompt(request: VerificationRequest): string {
     ...(request.implementationEvidence ? [request.implementationEvidence] : ["- No explicit evidence provided by implementation worker."]),
     "",
     "Your Role: Verifier / Reviewer",
+    `Role description: ${role.description}`,
     "Lane: verification",
+    "",
+    "Role framing:",
+    ...role.promptFrame.map((line) => `- ${line}`),
     "",
     "Verification Tasks:",
     "1. Review the changes made in the implementation lane.",
@@ -112,6 +125,7 @@ export function buildVerifierPrompt(request: VerificationRequest): string {
     ...formatBullets(request.whatNotToChange),
     "",
     "Expected handoff:",
+    ...role.expectedHandoff.map((line) => `- ${line}`),
     "- Provide verification evidence using the prefix: " + VERIFICATION_EVIDENCE_PREFIX,
     "- List any residual risks or blockers using the prefix: " + VERIFICATION_BLOCKER_PREFIX,
     ...formatBullets(request.expectedHandoff)
@@ -124,7 +138,14 @@ export async function dispatchVerification(
   client: SoloWorkerClient,
   request: VerificationRequest
 ): Promise<WorkerDispatchResult> {
-  const selection = await selectWorkerRuntime(client, request.runtimeSelection);
+  const selection = await selectWorkerRuntimeForDispatch(client, {
+    role: "verifier",
+    roleId: "verifier",
+    runtimeSelection: request.runtimeSelection,
+    config: request.config,
+    projectId: request.projectId,
+    sessionRoleOverrides: request.sessionRoleOverrides
+  });
   if (selection.status === "decision-needed") {
     return selection;
   }
@@ -154,7 +175,7 @@ export function verificationAssignmentComment(
   runtime: SoloWorkerRuntime,
   process: SoloWorkerProcess
 ): string {
-  return `${VERIFICATION_ASSIGNMENT_PREFIX} runtime=${runtime.id} (${runtime.name}); process=${process.id} (${process.name})`;
+  return `${VERIFICATION_ASSIGNMENT_PREFIX} role=verifier; runtime=${runtime.id} (${runtime.name}); process=${process.id} (${process.name})`;
 }
 
 function formatBullets(values: string[]): string[] {

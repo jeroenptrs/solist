@@ -3,11 +3,13 @@ import {
   buildWorkerPrompt,
   dispatchWorker,
   selectWorkerRuntime,
+  selectWorkerRuntimeForDispatch,
   type SoloWorkerClient,
   type SoloWorkerProcess,
   type SoloWorkerRuntime
 } from "./soloWorkers.js";
 import type { SoloTodo } from "./soloPlanning.js";
+import { defaultSolistConfig, setSolistRoleBinding } from "./solistConfig.js";
 
 class FakeWorkerClient implements SoloWorkerClient {
   public spawnCalls: Array<{ runtimeId: string; prompt: string; name?: string }> = [];
@@ -92,6 +94,48 @@ describe("Solo worker dispatch", () => {
     });
   });
 
+  it("selects a worker runtime through configured role binding", async () => {
+    const client = new FakeWorkerClient(
+      [
+        { id: "4", name: "Codex" },
+        { id: "27", name: "Codex High" }
+      ],
+      todo
+    );
+    const config = setSolistRoleBinding(
+      defaultSolistConfig(),
+      "feature-worker",
+      { agentToolId: 27, lastKnownName: "Codex High" }
+    );
+
+    await expect(selectWorkerRuntimeForDispatch(client, {
+      role: "feature-worker",
+      roleId: "feature-worker",
+      config
+    })).resolves.toMatchObject({
+      status: "selected",
+      runtime: { id: "27", name: "Codex High" }
+    });
+  });
+
+  it("returns decision-needed when a configured role has no available runtime", async () => {
+    const client = new FakeWorkerClient([{ id: "4", name: "Codex" }], todo);
+    const config = setSolistRoleBinding(
+      defaultSolistConfig(),
+      "reviewer",
+      { agentToolId: 1, lastKnownName: "Gemini" }
+    );
+
+    await expect(selectWorkerRuntimeForDispatch(client, {
+      role: "reviewer",
+      roleId: "reviewer",
+      config
+    })).resolves.toMatchObject({
+      status: "decision-needed",
+      reason: expect.stringContaining("does not match")
+    });
+  });
+
   it("builds a narrow worker prompt with coordination and ownership constraints", () => {
     const prompt = buildWorkerPrompt({
       objective: "Implement runtime dispatch only.",
@@ -158,6 +202,54 @@ describe("Solo worker dispatch", () => {
         ]
       }
     });
+  });
+
+  it("spawns role-bound workers and records the role in the assignment comment", async () => {
+    const client = new FakeWorkerClient(
+      [
+        { id: "4", name: "Codex" },
+        { id: "27", name: "Codex High" }
+      ],
+      todo,
+      {
+        id: "solo-process-44",
+        name: "feature-worker"
+      }
+    );
+    const config = setSolistRoleBinding(
+      defaultSolistConfig(),
+      "feature-worker",
+      { agentToolId: 27, lastKnownName: "Codex High" }
+    );
+
+    const result = await dispatchWorker(client, {
+      objective: "Implement a mode registry.",
+      scratchpadUri: "solo://proj/11/scratchpad/solo-orchestration-a--50",
+      todo,
+      role: "feature-worker",
+      roleId: "feature-worker",
+      lane: "mode-registry",
+      ownershipBoundaries: ["Own src/solistModes.ts and tests."],
+      whatNotToChange: ["Do not alter auth behavior."],
+      expectedHandoff: ["Summarize mode defaults."],
+      workerName: "feature-worker",
+      config
+    });
+
+    expect(result.status).toBe("spawned");
+    expect(client.spawnCalls).toEqual([
+      {
+        runtimeId: "27",
+        prompt: expect.stringContaining("Role: feature-worker"),
+        name: "feature-worker"
+      }
+    ]);
+    expect(client.commentsAdded).toEqual([
+      {
+        uri: todo.uri,
+        body: "Solist worker assignment: role=feature-worker; runtime=27 (Codex High); process=solo-process-44 (feature-worker)"
+      }
+    ]);
   });
 
   it("does not spawn or comment when runtime selection needs a decision", async () => {

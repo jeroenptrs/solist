@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 export const SOLIST_HOME_ENV = "SOLIST_HOME";
 export const SOLIST_AUTH_PATH_ENV = "SOLIST_AUTH_PATH";
 export const SOLIST_MCP_CONFIG_ENV = "SOLIST_MCP_CONFIG";
+export const SOLIST_CONFIG_PATH_ENV = "SOLIST_CONFIG_PATH";
 
 export function expandHomePath(path: string): string {
 	if (path === "~") return homedir();
@@ -27,6 +28,15 @@ export function getSolistAuthPath(
 	return configured
 		? resolve(expandHomePath(configured))
 		: join(resolveSolistHome(env), "auth.json");
+}
+
+export function getSolistConfigPath(
+	env: NodeJS.ProcessEnv = process.env,
+): string {
+	const configured = env[SOLIST_CONFIG_PATH_ENV];
+	return configured
+		? resolve(expandHomePath(configured))
+		: join(resolveSolistHome(env), "config.json");
 }
 
 export function getSolistMcpConfigPaths(

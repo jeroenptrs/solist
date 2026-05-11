@@ -1,4 +1,11 @@
 import type { SoloTodo } from "./soloPlanning.js";
+import {
+  resolveRoleBinding,
+  type SoloAgentToolReference,
+  type SolistConfig,
+  type SolistRoleBindings
+} from "./solistConfig.js";
+import { SOLIST_ROLES, resolveSolistRoleId, type SolistRoleId } from "./solistRoles.js";
 
 export interface SoloWorkerRuntime {
   id: string;
@@ -26,12 +33,16 @@ export interface WorkerDispatchRequest {
   scratchpadUri: string;
   todo: SoloTodo;
   role: string;
+  roleId?: SolistRoleId;
   lane: string;
   ownershipBoundaries: string[];
   whatNotToChange: string[];
   expectedHandoff: string[];
   runtimeSelection?: string;
   workerName?: string;
+  config?: SolistConfig;
+  projectId?: number | string;
+  sessionRoleOverrides?: SolistRoleBindings;
 }
 
 export type WorkerRuntimeSelectionResult =
@@ -65,7 +76,56 @@ export async function selectWorkerRuntime(
   runtimeSelection?: string
 ): Promise<WorkerRuntimeSelectionResult> {
   const runtimes = await client.listWorkerRuntimes();
+  return selectWorkerRuntimeFromList(runtimes, runtimeSelection);
+}
 
+export async function selectWorkerRuntimeForDispatch(
+  client: Pick<SoloWorkerClient, "listWorkerRuntimes">,
+  request: Pick<WorkerDispatchRequest, "runtimeSelection" | "role" | "roleId" | "config" | "projectId" | "sessionRoleOverrides">
+): Promise<WorkerRuntimeSelectionResult> {
+  const runtimes = await client.listWorkerRuntimes();
+  if (request.runtimeSelection) {
+    return selectWorkerRuntimeFromList(runtimes, request.runtimeSelection);
+  }
+
+  const roleId = request.roleId ?? resolveSolistRoleId(request.role);
+  if (request.config && roleId) {
+    const resolution = resolveRoleBinding({
+      roleId,
+      config: request.config,
+      projectId: request.projectId,
+      sessionOverrides: request.sessionRoleOverrides,
+      availableAgentTools: runtimesToAgentTools(runtimes),
+    });
+    if (resolution.status === "decision-needed") {
+      return {
+        status: "decision-needed",
+        reason: resolution.reason,
+        runtimes
+      };
+    }
+
+    const selected = runtimes.find((runtime) =>
+      runtime.name === resolution.agentTool.name
+      || Number(runtime.id) === resolution.agentTool.id
+    );
+    if (!selected) {
+      return {
+        status: "decision-needed",
+        reason: `Resolved Solo agent tool ${resolution.agentTool.id} (${resolution.agentTool.name}) is not available as a worker runtime.`,
+        runtimes
+      };
+    }
+    return { status: "selected", runtime: selected, runtimes };
+  }
+
+  return selectWorkerRuntimeFromList(runtimes, undefined);
+}
+
+function selectWorkerRuntimeFromList(
+  runtimes: SoloWorkerRuntime[],
+  runtimeSelection?: string
+): WorkerRuntimeSelectionResult {
   if (runtimeSelection) {
     const selected = runtimes.find(
       (runtime) => runtime.id === runtimeSelection || runtime.name === runtimeSelection
@@ -95,6 +155,8 @@ export async function selectWorkerRuntime(
 }
 
 export function buildWorkerPrompt(request: WorkerDispatchRequest): string {
+  const roleId = request.roleId ?? resolveSolistRoleId(request.role);
+  const role = roleId ? SOLIST_ROLES[roleId] : undefined;
   return [
     `Objective: ${request.objective}`,
     "",
@@ -105,8 +167,14 @@ export function buildWorkerPrompt(request: WorkerDispatchRequest): string {
     ...(request.todo.body ? [`- Todo body: ${request.todo.body}`] : []),
     "",
     "Role and lane:",
-    `- Role: ${request.role}`,
+    `- Role: ${role ? role.id : request.role}`,
+    ...(role ? [`- Role description: ${role.description}`] : []),
     `- Lane: ${request.lane}`,
+    ...(role ? [
+      "",
+      "Role framing:",
+      ...formatBullets([...role.promptFrame]),
+    ] : []),
     "",
     "Ownership boundaries:",
     ...formatBullets(request.ownershipBoundaries),
@@ -120,7 +188,10 @@ export function buildWorkerPrompt(request: WorkerDispatchRequest): string {
     ...formatBullets(request.whatNotToChange),
     "",
     "Expected handoff:",
-    ...formatBullets(request.expectedHandoff)
+    ...formatBullets([
+      ...(role?.expectedHandoff ?? []),
+      ...request.expectedHandoff,
+    ])
   ].join("\n");
 }
 
@@ -128,11 +199,12 @@ export async function dispatchWorker(
   client: SoloWorkerClient,
   request: WorkerDispatchRequest
 ): Promise<WorkerDispatchResult> {
-  const selection = await selectWorkerRuntime(client, request.runtimeSelection);
+  const selection = await selectWorkerRuntimeForDispatch(client, request);
   if (selection.status === "decision-needed") {
     return selection;
   }
 
+  const roleId = request.roleId ?? resolveSolistRoleId(request.role);
   const prompt = buildWorkerPrompt(request);
   const process = await client.spawnWorker({
     runtimeId: selection.runtime.id,
@@ -141,7 +213,7 @@ export async function dispatchWorker(
   });
   const todo = await client.addTodoComment(
     request.todo.uri,
-    assignmentComment(selection.runtime, process)
+    assignmentComment(selection.runtime, process, roleId)
   );
 
   return {
@@ -153,10 +225,26 @@ export async function dispatchWorker(
   };
 }
 
-export function assignmentComment(runtime: SoloWorkerRuntime, process: SoloWorkerProcess): string {
-  return `Solist worker assignment: runtime=${runtime.id} (${runtime.name}); process=${process.id} (${process.name})`;
+export function assignmentComment(
+  runtime: SoloWorkerRuntime,
+  process: SoloWorkerProcess,
+  roleId?: SolistRoleId
+): string {
+  const role = roleId ? `role=${roleId}; ` : "";
+  return `Solist worker assignment: ${role}runtime=${runtime.id} (${runtime.name}); process=${process.id} (${process.name})`;
 }
 
 function formatBullets(values: string[]): string[] {
   return values.length > 0 ? values.map((value) => `- ${value}`) : ["- None"];
+}
+
+function runtimesToAgentTools(runtimes: readonly SoloWorkerRuntime[]): SoloAgentToolReference[] {
+  return runtimes.map((runtime, index) => {
+    const id = Number(runtime.id);
+    return {
+      id: Number.isInteger(id) ? id : -(index + 1),
+      name: runtime.name,
+      enabled: true,
+    };
+  });
 }

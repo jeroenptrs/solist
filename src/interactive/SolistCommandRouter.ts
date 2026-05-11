@@ -23,6 +23,22 @@ export const SOLIST_INTERACTIVE_COMMANDS: readonly SlashCommand[] = [
 		description: "Show model, reasoning, cwd, message count, and tool count",
 	},
 	{
+		name: "mode",
+		description: "Show or persist the Solist mode",
+	},
+	{
+		name: "roles",
+		description: "List orchestration roles and persisted bindings",
+	},
+	{
+		name: "role",
+		description: "Set, unset, or override a role-to-Solo-agent binding",
+	},
+	{
+		name: "role-switch",
+		description: "Switch a role to a Solo agent for this conversation",
+	},
+	{
 		name: "login",
 		description: "Authenticate Solist with the pinned Codex provider",
 	},
@@ -71,6 +87,9 @@ export type SolistInteractiveRoute =
 	| { kind: "exit" }
 	| { kind: "clear"; message: string }
 	| { kind: "render"; message: string }
+	| { kind: "mode"; mode?: string; project?: string }
+	| { kind: "roles"; action?: "list" | "doctor"; project?: string }
+	| { kind: "role"; action: "set" | "unset" | "override" | "switch"; role?: string; agent?: string; project?: string }
 	| { kind: "login"; provider?: string }
 	| { kind: "logout"; provider?: string }
 	| { kind: "prompt"; prompt: string };
@@ -120,6 +139,38 @@ export function routeSolistInteractiveInput(
 
 	if (normalized === "/status") {
 		return { kind: "render", message: getStatusText(context.status) };
+	}
+
+	if (normalized === "/mode" || normalized.startsWith("/mode ")) {
+		const options = getCommandOptions(trimmed);
+		return {
+			kind: "mode",
+			mode: options.args.join(" ").trim() || undefined,
+			project: options.project,
+		};
+	}
+
+	if (normalized === "/roles" || normalized.startsWith("/roles ")) {
+		const options = getCommandOptions(trimmed);
+		const [action] = options.args;
+		if (!action || action === "list") {
+			return { kind: "roles", action: "list", project: options.project };
+		}
+		if (action === "doctor") {
+			return { kind: "roles", action: "doctor", project: options.project };
+		}
+		return {
+			kind: "render",
+			message: "Usage: /roles [list|doctor] [--project[=id|current]]",
+		};
+	}
+
+	if (normalized === "/role" || normalized.startsWith("/role ")) {
+		return getRoleRoute(trimmed);
+	}
+
+	if (normalized === "/role-switch" || normalized.startsWith("/role-switch ")) {
+		return getRoleSwitchRoute(trimmed);
 	}
 
 	if (normalized === "/login" || normalized.startsWith("/login ")) {
@@ -177,14 +228,73 @@ function getInteractiveHelpText(): string {
 		"",
 		"Solist keeps this process' conversation context in memory and uses Solo for durable plans, todos, blockers, and worker handoffs.",
 		"Use the editor for multi-line prompts: Shift+Enter, Ctrl+Enter, or Alt+Enter inserts a newline when your terminal supports it.",
+		"Use /mode for persisted mode selection, /roles or /role set for role bindings, and /role-switch for conversation-scoped role switching.",
 		"Pi session commands, model switching, import/export/share, resume/fork/tree, reload, compact, and ! shell mode are not available.",
 	].join("\n");
+}
+
+function getRoleRoute(input: string): SolistInteractiveRoute {
+	const options = getCommandOptions(input);
+	const [action, role, ...agentParts] = options.args;
+	if (action === "set" || action === "override" || action === "switch") {
+		return {
+			kind: "role",
+			action,
+			role,
+			agent: agentParts.join(" ").trim() || undefined,
+			project: options.project,
+		};
+	}
+	if (action === "unset") {
+		return { kind: "role", action, role, project: options.project };
+	}
+	return {
+		kind: "render",
+		message: "Usage: /role set <role> <agent id or exact name> [--project[=id|current]] | /role unset <role> [--project[=id|current]] | /role override <role> <agent id or exact name> | /role switch <role> <agent id or exact name>",
+	};
+}
+
+function getRoleSwitchRoute(input: string): SolistInteractiveRoute {
+	const options = getCommandOptions(input);
+	const [role, ...agentParts] = options.args;
+	return {
+		kind: "role",
+		action: "switch",
+		role,
+		agent: agentParts.join(" ").trim() || undefined,
+		project: options.project,
+	};
 }
 
 function getCommandArgument(input: string): string | undefined {
 	const [, ...parts] = input.trim().split(/\s+/);
 	const arg = parts.join(" ").trim();
 	return arg || undefined;
+}
+
+function getCommandOptions(input: string): { args: string[]; project?: string } {
+	const [, ...parts] = input.trim().split(/\s+/);
+	const args: string[] = [];
+	let project: string | undefined;
+	for (let index = 0; index < parts.length; index += 1) {
+		const part = parts[index];
+		if (part === "--project") {
+			const next = parts[index + 1];
+			if (next === "current" || (next !== undefined && /^\d+$/.test(next))) {
+				project = next;
+				index += 1;
+			} else {
+				project = "current";
+			}
+			continue;
+		}
+		if (part.startsWith("--project=")) {
+			project = part.slice("--project=".length) || "current";
+			continue;
+		}
+		args.push(part);
+	}
+	return { args, project };
 }
 
 function getToolsText(tools: readonly AgentTool[]): string {
