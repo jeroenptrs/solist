@@ -171,11 +171,52 @@ describe("SolistInteractiveMode", () => {
 		expect(terminal.output).toContain("openai-codex/gpt-5.5");
 		expect(terminal.output).toContain("agent:idle");
 		expect(terminal.output).toContain("reasoning:off");
+		expect(terminal.output).toContain("ctx:~0");
 		expect(terminal.output).toContain("\x1b[32mSolist Ready");
 
 		terminal.send("exit\r");
 		await done;
 		expect(terminal.stopped).toBe(true);
+	});
+
+	it("queues submitted prompts while a turn is active", async () => {
+		const terminal = new FakeTerminal();
+		const firstRun = createDeferred();
+		const secondRun = createDeferred();
+		const prompts: string[] = [];
+		const harness = {
+			...createHarness(),
+			async run(prompt: string) {
+				prompts.push(prompt);
+				if (prompts.length === 1) {
+					await firstRun.promise;
+					return;
+				}
+				await secondRun.promise;
+			},
+		} satisfies SolistInteractiveHarness;
+		const mode = new SolistInteractiveMode(harness, {
+			terminal,
+			showWelcome: false,
+		});
+
+		const done = mode.run("first");
+		await waitForRender();
+		terminal.send("second\r");
+		await waitForRender();
+
+		expect(prompts).toEqual(["first"]);
+		expect(terminal.output).toContain("Queued input 1.");
+		expect(terminal.output).toContain("queued:1");
+
+		firstRun.resolve();
+		await waitForRender();
+		expect(prompts).toEqual(["first", "second"]);
+
+		secondRun.resolve();
+		await waitForRender();
+		terminal.send("/exit\r");
+		await done;
 	});
 
 	it("submits exact /exit without requiring autocomplete confirmation", async () => {

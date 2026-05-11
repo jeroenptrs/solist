@@ -80,7 +80,7 @@ describe("createSolistRoleDispatchTool", () => {
 		});
 	});
 
-	it("spawns every Solo agent mapped to a role", async () => {
+	it("spawns one Solo agent by default when multiple agents are mapped to a role", async () => {
 		const client = new FakeSoloMcpClient([
 			{ id: 7, name: "Codex High", enabled: true },
 			{ id: 9, name: "Gemini", enabled: true },
@@ -101,6 +101,37 @@ describe("createSolistRoleDispatchTool", () => {
 			todo_id: 123,
 			todo_title: "Review patch",
 			worker_name: "reviewer",
+		});
+
+		expect(firstText(result)).toContain("Agent tools: 7 (Codex High)");
+		expect(firstText(result)).not.toContain("9 (Gemini)");
+		expect(client.calls.filter((call) => call.name === "spawn_process").map((call) => call.args.agent_tool_id)).toEqual([7]);
+		expect(client.calls.filter((call) => call.name === "send_input")).toHaveLength(1);
+		expect(client.calls.at(-1)?.args.body).not.toEqual(expect.stringContaining("runtime=9 (Gemini)"));
+	});
+
+	it("spawns every Solo agent mapped to a role when explicitly requested", async () => {
+		const client = new FakeSoloMcpClient([
+			{ id: 7, name: "Codex High", enabled: true },
+			{ id: 9, name: "Gemini", enabled: true },
+		]);
+		const config = setSolistRoleBindings(defaultSolistConfig(), "reviewer", [
+			{ agentToolId: 7, lastKnownName: "Codex High" },
+			{ agentToolId: 9, lastKnownName: "Gemini" },
+		]);
+		const tool = createSolistRoleDispatchTool(client, {
+			configReader: () => config,
+			projectId: 11,
+		});
+
+		const result = await tool.execute("call-1", {
+			role_id: "reviewer",
+			objective: "Review the patch for regressions with all reviewers",
+			scratchpad_uri: "solo://proj/11/scratchpad/plan--1",
+			todo_id: 123,
+			todo_title: "Review patch",
+			worker_name: "reviewer",
+			use_all_configured_agents: true,
 		});
 
 		expect(firstText(result)).toContain("Agent tools: 7 (Codex High), 9 (Gemini)");
@@ -130,6 +161,7 @@ describe("createSolistRoleDispatchTool", () => {
 			todo_id: 123,
 			todo_title: "Review patch",
 			worker_name: "reviewer",
+			use_all_configured_agents: true,
 		})).rejects.toThrow("spawn failed at 2");
 
 		expect(client.calls.filter((call) => call.name === "close_process").map((call) => call.args.process_id)).toEqual([44]);

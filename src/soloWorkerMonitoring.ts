@@ -34,6 +34,7 @@ export interface WorkerTimerClient {
     runtimeId: string;
     delayMs: number;
     reason: string;
+    waitForIdle?: boolean;
   }): Promise<WorkerTimer>;
 }
 
@@ -122,7 +123,8 @@ export async function monitorWorkers(input: WorkerMonitoringInput): Promise<Work
         processId: worker.processId,
         runtimeId: worker.runtimeId,
         delayMs: input.checkDelayMs,
-        reason: "Worker monitoring wake check."
+        reason: "Worker monitoring idle wake check.",
+        waitForIdle: true
       });
 
       stillRunning.push(worker);

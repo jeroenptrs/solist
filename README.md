@@ -62,7 +62,7 @@ With a global install, the equivalent command is:
 solist "Inspect todo 207 and propose the next Solo worker handoff"
 ```
 
-Inside the chat, press `/` at the start of the prompt to open the command overview, type `/help` for the Solist command set, use `/login` / `/logout` to manage Solist's Codex credentials, `/mode` to choose the active mode with arrow keys, `/roles` and `/role` to manage role-to-Solo-agent bindings in the TUI, `/resume` to reopen persisted conversations, or `/exit` / `/quit` to stop the process. Assistant responses, tool calls, and tool completion events render in the same chat surface above the editor. The status line shows the current state, model, reasoning level, message count, tool count, Solo MCP availability, and cwd.
+Inside the chat, press `/` at the start of the prompt to open the command overview, type `/help` for the Solist command set, use `/login` / `/logout` to manage Solist's Codex credentials, `/mode` to choose the active mode with arrow keys, `/roles` and `/role` to manage role-to-Solo-agent bindings in the TUI, `/resume` to reopen persisted conversations, or `/exit` / `/quit` to stop the process. Assistant responses, tool calls, and tool completion events render in the same chat surface above the editor. While Solist is working, submitted prompts are queued and sent to the same conversation when the active turn finishes. The status line shows the current state, model, reasoning level, message count, tool count, approximate context size, queued input count, Solo MCP availability, and cwd.
 
 You can also provide a prompt on stdin when no prompt arguments are present. Piped stdin is non-interactive, so Solist treats it as a batch prompt and exits after the response:
 
@@ -222,9 +222,9 @@ solist roles list --project current
 solist roles set verifier "Codex High" --project 11
 ```
 
-Role bindings are validated against Solo's configured agent tools via `list_agent_tools`. A role can map to one or more Solo agent tools. When a mapped role is dispatched without an explicit `agent_tool` override, Solist spawns one Solo process per mapped agent and records all process assignments on the Solo todo. `/role-switch` and `/role override` affect prompts submitted later in the same Solist process; persisted bindings live in Solist config.
+Role bindings are validated against Solo's configured agent tools via `list_agent_tools`. A role can map to one or more Solo agent tools. When a mapped role has multiple agents, singular dispatches use one configured agent by default; all mapped agents are spawned only when the dispatch explicitly asks for multiple agents. `/role-switch` and `/role override` affect prompts submitted later in the same Solist process; persisted bindings live in Solist config.
 
-When roles are enabled, the orchestrator gets a Solist-owned `solist_dispatch_role` tool. It resolves the configured global, project, or session-provided Solo agent choices, spawns the Solo agents, sends the role-framed assignment with `send_input`, and records the assignment comment on the Solo todo. The raw `solo_mcp_spawn_process` and `solo_mcp_send_input` tools remain available for handoff shapes that need lower-level control.
+When roles are enabled, the orchestrator gets a Solist-owned `solist_dispatch_role` tool. It resolves the configured global, project, or session-provided Solo agent choices, spawns the selected Solo agent or agents, sends the role-framed assignment with `send_input`, and records the assignment comment on the Solo todo. The raw `solo_mcp_spawn_process` and `solo_mcp_send_input` tools remain available for handoff shapes that need lower-level control.
 
 ### Sessions and Resume
 

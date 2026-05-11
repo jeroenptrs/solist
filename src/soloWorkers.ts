@@ -40,6 +40,8 @@ export interface WorkerDispatchRequest {
   whatNotToChange: string[];
   expectedHandoff: string[];
   runtimeSelection?: string;
+  dispatchCount?: number;
+  useAllConfiguredAgents?: boolean;
   workerName?: string;
   config?: SolistConfig;
   projectId?: number | string;
@@ -85,7 +87,7 @@ export async function selectWorkerRuntime(
 
 export async function selectWorkerRuntimeForDispatch(
   client: Pick<SoloWorkerClient, "listWorkerRuntimes">,
-  request: Pick<WorkerDispatchRequest, "runtimeSelection" | "role" | "roleId" | "config" | "projectId" | "sessionRoleOverrides">
+  request: Pick<WorkerDispatchRequest, "runtimeSelection" | "role" | "roleId" | "dispatchCount" | "useAllConfiguredAgents" | "config" | "projectId" | "sessionRoleOverrides">
 ): Promise<WorkerRuntimeSelectionResult> {
   const runtimes = await client.listWorkerRuntimes();
   if (request.runtimeSelection) {
@@ -123,10 +125,46 @@ export async function selectWorkerRuntimeForDispatch(
         runtimes
       };
     }
-    return { status: "selected", runtime: selected[0]!, selectedRuntimes: selected, runtimes };
+    const selectedRuntimes = selectConfiguredRuntimesForRequest(selected, request);
+    if (selectedRuntimes.status === "decision-needed") {
+      return {
+        status: "decision-needed",
+        reason: selectedRuntimes.reason,
+        runtimes
+      };
+    }
+    return { status: "selected", runtime: selectedRuntimes.runtimes[0]!, selectedRuntimes: selectedRuntimes.runtimes, runtimes };
   }
 
   return selectWorkerRuntimeFromList(runtimes, undefined);
+}
+
+function selectConfiguredRuntimesForRequest(
+  selected: readonly SoloWorkerRuntime[],
+  request: Pick<WorkerDispatchRequest, "dispatchCount" | "useAllConfiguredAgents">
+): { status: "selected"; runtimes: SoloWorkerRuntime[] } | { status: "decision-needed"; reason: string } {
+  if (selected.length <= 1) {
+    return { status: "selected", runtimes: [...selected] };
+  }
+
+  if (request.useAllConfiguredAgents) {
+    return { status: "selected", runtimes: [...selected] };
+  }
+
+  if (request.dispatchCount !== undefined) {
+    if (!Number.isInteger(request.dispatchCount) || request.dispatchCount <= 0) {
+      return { status: "decision-needed", reason: "dispatchCount must be a positive integer." };
+    }
+    if (request.dispatchCount > selected.length) {
+      return {
+        status: "decision-needed",
+        reason: `Requested ${request.dispatchCount} workers, but only ${selected.length} configured Solo agents are available for this role.`
+      };
+    }
+    return { status: "selected", runtimes: selected.slice(0, request.dispatchCount) };
+  }
+
+  return { status: "selected", runtimes: [selected[0]!] };
 }
 
 function selectWorkerRuntimeFromList(

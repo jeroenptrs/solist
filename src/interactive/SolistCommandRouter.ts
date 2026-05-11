@@ -78,6 +78,14 @@ export interface SolistInteractiveStatus {
 	soloMcpAvailable: boolean;
 	messageCount: number;
 	toolCount: number;
+	contextUsage?: SolistContextUsage;
+	queuedInputCount?: number;
+}
+
+export interface SolistContextUsage {
+	used: number;
+	limit?: number;
+	approximate?: boolean;
 }
 
 export interface SolistInteractiveCommandContext {
@@ -333,7 +341,26 @@ function getStatusText(status: SolistInteractiveStatus): string {
 		`  solo mcp: ${status.soloMcpAvailable ? "available" : "unavailable"}`,
 		`  messages: ${status.messageCount}`,
 		`  tools: ${status.toolCount}`,
+		`  context: ${formatContextUsage(status.contextUsage)}`,
+		`  queued inputs: ${status.queuedInputCount ?? 0}`,
 	].join("\n");
+}
+
+function formatContextUsage(contextUsage: SolistContextUsage | undefined): string {
+	if (!contextUsage) {
+		return "unknown";
+	}
+	const used = formatTokenCount(contextUsage.used);
+	const limit = contextUsage.limit ? `/${formatTokenCount(contextUsage.limit)}` : "";
+	const approximate = contextUsage.approximate ? " approx" : "";
+	return `${used}${limit}${approximate}`;
+}
+
+function formatTokenCount(value: number): string {
+	if (value >= 1000) {
+		return `${Math.round(value / 100) / 10}k`;
+	}
+	return String(value);
 }
 
 function getUnsupportedCommandText(command: string): string {

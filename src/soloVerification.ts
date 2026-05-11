@@ -27,6 +27,8 @@ export interface VerificationRequest {
   whatNotToChange: string[];
   expectedHandoff: string[];
   runtimeSelection?: string;
+  dispatchCount?: number;
+  useAllConfiguredAgents?: boolean;
   workerName?: string;
   implementationEvidence?: string;
   config?: SolistConfig;
@@ -142,6 +144,8 @@ export async function dispatchVerification(
     role: "verifier",
     roleId: "verifier",
     runtimeSelection: request.runtimeSelection,
+    dispatchCount: request.dispatchCount,
+    useAllConfiguredAgents: request.useAllConfiguredAgents,
     config: request.config,
     projectId: request.projectId,
     sessionRoleOverrides: request.sessionRoleOverrides

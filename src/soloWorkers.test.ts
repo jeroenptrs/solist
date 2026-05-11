@@ -261,7 +261,7 @@ describe("Solo worker dispatch", () => {
     ]);
   });
 
-  it("spawns one worker per configured agent when a role maps to multiple agents", async () => {
+  it("spawns one configured agent by default when a role maps to multiple agents", async () => {
     const client = new FakeWorkerClient(
       [
         { id: "27", name: "Codex High" },
@@ -290,6 +290,45 @@ describe("Solo worker dispatch", () => {
       expectedHandoff: [],
       workerName: "reviewer",
       config
+    });
+
+    expect(result.status).toBe("spawned");
+    expect(client.spawnCalls.map((call) => call.runtimeId)).toEqual(["27"]);
+    expect(client.spawnCalls.map((call) => call.name)).toEqual(["reviewer"]);
+    expect(client.commentsAdded[0]?.body).toContain("runtime=27 (Codex High)");
+    expect(client.commentsAdded[0]?.body).not.toContain("runtime=31 (Gemini)");
+  });
+
+  it("spawns every configured agent only when explicitly requested", async () => {
+    const client = new FakeWorkerClient(
+      [
+        { id: "27", name: "Codex High" },
+        { id: "31", name: "Gemini" }
+      ],
+      todo
+    );
+    const config = setSolistRoleBindings(
+      defaultSolistConfig(),
+      "reviewer",
+      [
+        { agentToolId: 27, lastKnownName: "Codex High" },
+        { agentToolId: 31, lastKnownName: "Gemini" }
+      ]
+    );
+
+    const result = await dispatchWorker(client, {
+      objective: "Review the implementation with all configured reviewers.",
+      scratchpadUri: "solo://proj/11/scratchpad/50",
+      todo,
+      role: "reviewer",
+      roleId: "reviewer",
+      lane: "review",
+      ownershipBoundaries: [],
+      whatNotToChange: [],
+      expectedHandoff: [],
+      workerName: "reviewer",
+      config,
+      useAllConfiguredAgents: true
     });
 
     expect(result.status).toBe("spawned");
@@ -329,7 +368,8 @@ describe("Solo worker dispatch", () => {
       whatNotToChange: [],
       expectedHandoff: [],
       workerName: "reviewer",
-      config
+      config,
+      useAllConfiguredAgents: true
     })).rejects.toThrow("spawn failed at 2");
 
     expect(client.closedProcessIds).toEqual(["solo-process-27"]);

@@ -78,6 +78,7 @@ Verification and blockers:
 - Do not mark work complete until worker evidence and verification evidence are recorded in Solo state.
 - Verification evidence must include commands run, results, and any skipped checks with reasons.
 - For non-trivial implementation, delegate a separate verification or review worker before completion.
+- When waiting on workers, prefer Solo idle-aware timers such as timer_fire_when_idle_any or timer_fire_when_idle_all. After scheduling a wake timer, yield and wait for Solo to resume you instead of manually polling process status in a loop.
 - If blocked, record the blocker in Solo state, explain the impact, and ask for the smallest decision or dependency needed to continue.
 - Keep all status updates and final handoffs concise and evidence-based.`;
 }
@@ -99,6 +100,7 @@ function orchestrationRoleSection(
 		"- Use patch-worker for small localized edits, feature-worker for coherent multi-file feature slices, and refactor-worker for structural or compatibility-sensitive changes.",
 		"- External research and design-oracle style work is deferred to analysis and deep-analysis modes.",
 		"- Prefer solist_dispatch_role for worker dispatch; it resolves the configured Solo agent tool, spawns the Solo agent, sends the role-framed assignment, and records the todo comment.",
+		"- If a role has multiple configured Solo agents, singular requests such as \"spawn a reviewer\" use one agent by default; use multiple agents only when the user explicitly asks for plurality or confirms it.",
 		"- Use solo_mcp_spawn_process plus solo_mcp_send_input directly only when solist_dispatch_role cannot cover the handoff shape.",
 		"- If a role binding is missing or stale, list available Solo agent tools and ask for a role switch or mapping instead of guessing.",
 		"",

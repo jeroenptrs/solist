@@ -187,12 +187,25 @@ export class StdioSoloMcpClient implements SoloMcpClient {
 }
 
 export const SOLO_MCP_ORCHESTRATION_OPERATIONS = [
+  "bind_session_process",
+  "clear_output",
+  "close_process",
+  "flush_terminal_perf",
+  "help",
   "scratchpad_list",
   "scratchpad_read",
   "scratchpad_write",
   "scratchpad_append",
+  "scratchpad_archive",
+  "scratchpad_clear",
   "scratchpad_add_tags",
+  "scratchpad_delete",
+  "scratchpad_load_from_file",
   "scratchpad_remove_tags",
+  "scratchpad_rename",
+  "scratchpad_save_to_file",
+  "scratchpad_tags_list",
+  "scratchpad_transfer",
   "todo_list",
   "todo_get",
   "todo_create",
@@ -200,26 +213,60 @@ export const SOLO_MCP_ORCHESTRATION_OPERATIONS = [
   "todo_complete",
   "todo_add_tag",
   "todo_remove_tag",
+  "todo_delete",
   "todo_set_blockers",
   "todo_add_blocker",
   "todo_remove_blocker",
+  "todo_comment_delete",
   "todo_comment_create",
   "todo_comment_list",
   "todo_comment_update",
+  "todo_lock",
+  "todo_tags_list",
+  "todo_transfer",
+  "todo_unlock",
+  "kv_delete",
+  "kv_get",
+  "kv_list",
+  "kv_set",
   "list_agent_tools",
+  "list_projects",
   "spawn_process",
+  "submit_solo_feedback",
   "send_input",
+  "start_process",
+  "stop_process",
+  "restart_process",
+  "start_all_commands",
+  "stop_all_commands",
+  "restart_all_commands",
   "list_processes",
   "get_process_status",
   "get_process_output",
   "get_process_raw_output",
+  "get_process_ports",
+  "get_project_stats",
+  "get_project_status",
   "search_output",
   "search_raw_output",
+  "select_process",
+  "select_project",
+  "services_list",
+  "setup_agent_integration",
+  "wait_for_bound_port",
+  "lock_acquire",
+  "lock_release",
+  "lock_status",
+  "register_agent",
+  "rename_process",
   "timer_set",
   "timer_cancel",
   "timer_list",
+  "timer_pause",
+  "timer_resume",
   "timer_fire_when_idle_any",
   "timer_fire_when_idle_all",
+  "whoami",
 ] as const;
 
 export const SOLO_MCP_EXPOSED_OPERATIONS = SOLO_MCP_ORCHESTRATION_OPERATIONS;
@@ -232,17 +279,8 @@ export function getSoloMcpOperationsForProfile(
   return SOLO_MCP_ORCHESTRATION_OPERATIONS;
 }
 
-const SOLO_MCP_BLOCKED_OPERATIONS = new Set([
-  "scratchpad_delete",
-  "todo_delete",
-  "stop_all_commands",
-  "restart_all_commands",
-  "stop_process",
-  "restart_process",
-  "close_process",
-]);
-
-const OPERATION_DESCRIPTIONS: Record<SoloMcpExposedOperation, string> = {
+const OPERATION_DESCRIPTIONS: Partial<Record<SoloMcpExposedOperation, string>> = {
+  close_process: "Solo MCP close_process: close a Solo terminal or agent process entry.",
   scratchpad_list: "Solo MCP scratchpad_list: list Solo scratchpads in the selected project.",
   scratchpad_read: "Solo MCP scratchpad_read: read a Solo scratchpad by id.",
   scratchpad_write: "Solo MCP scratchpad_write: create or replace a Solo scratchpad.",
@@ -265,6 +303,8 @@ const OPERATION_DESCRIPTIONS: Record<SoloMcpExposedOperation, string> = {
   list_agent_tools: "Solo MCP list_agent_tools: list Solo worker agent runtimes.",
   spawn_process: "Solo MCP spawn_process: spawn a Solo terminal or worker agent process.",
   send_input: "Solo MCP send_input: send an assignment or follow-up input to a Solo process.",
+  stop_process: "Solo MCP stop_process: gracefully stop one running Solo process.",
+  restart_process: "Solo MCP restart_process: restart one Solo process entry.",
   list_processes: "Solo MCP list_processes: list Solo processes.",
   get_process_status: "Solo MCP get_process_status: inspect one Solo process status.",
   get_process_output: "Solo MCP get_process_output: read rendered output for one Solo process.",
@@ -335,10 +375,12 @@ export async function checkSoloMcpReachability(
 }
 
 function createSoloMcpTool(operation: SoloMcpExposedOperation, client: SoloMcpClient): AgentTool<TSchema> {
+  const description = OPERATION_DESCRIPTIONS[operation]
+    ?? `Solo MCP ${operation}: generic Solo MCP wrapper.`;
   return {
     name: `solo_mcp_${operation}`,
     label: `Solo MCP ${operation}`,
-    description: `${OPERATION_DESCRIPTIONS[operation]} Maps directly to Solo MCP tool "${operation}".`,
+    description: `${description} Maps directly to Solo MCP tool "${operation}".`,
     parameters: Type.Object({
       args: Type.Record(Type.String(), Type.Unknown(), {
         description: `Arguments passed to Solo MCP ${operation}. Use the Solo MCP tool schema for field names.`,
@@ -365,9 +407,6 @@ function normalizeArgs(params: unknown): Record<string, unknown> {
 }
 
 function assertAllowedSoloMcpOperation(operation: string): void {
-  if (SOLO_MCP_BLOCKED_OPERATIONS.has(operation)) {
-    throw new Error(`Solo MCP operation ${operation} is blocked by Solist orchestrator policy.`);
-  }
   if (!SOLO_MCP_EXPOSED_OPERATIONS.includes(operation as SoloMcpExposedOperation)) {
     throw new Error(`Solo MCP operation ${operation} is not exposed by Solist.`);
   }

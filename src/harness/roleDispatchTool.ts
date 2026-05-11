@@ -37,6 +37,8 @@ export interface RoleDispatchToolParams {
 	readonly expected_handoff?: string[];
 	readonly worker_name?: string;
 	readonly agent_tool?: string;
+	readonly dispatch_count?: number;
+	readonly use_all_configured_agents?: boolean;
 	readonly project_id?: number | string;
 }
 
@@ -63,6 +65,8 @@ export function createSolistRoleDispatchTool(
 			expected_handoff: Type.Optional(Type.Array(Type.String(), { description: "Evidence and deliverables expected in the subagent handoff." })),
 			worker_name: Type.Optional(Type.String({ description: "Optional Solo process name." })),
 			agent_tool: Type.Optional(Type.String({ description: "Optional Solo agent tool id or exact name. Use for conversation-scoped /role-switch overrides." })),
+			dispatch_count: Type.Optional(Type.Number({ description: "Optional number of configured Solo agents to spawn for this role. Defaults to 1 when multiple agents are configured." })),
+			use_all_configured_agents: Type.Optional(Type.Boolean({ description: "Set true only when the user explicitly asks to use every configured Solo agent for this role." })),
 			project_id: Type.Optional(Type.Union([Type.Number(), Type.String()], { description: "Optional Solo project id override for role binding resolution." })),
 		}),
 		executionMode: "sequential",
@@ -93,6 +97,8 @@ async function dispatchRole(
 		role: roleId,
 		roleId,
 		runtimeSelection: input.agent_tool,
+		dispatchCount: input.dispatch_count,
+		useAllConfiguredAgents: input.use_all_configured_agents,
 		config,
 		projectId,
 		sessionRoleOverrides: options.sessionRoleOverrides?.(),
@@ -124,6 +130,8 @@ async function dispatchRole(
 		whatNotToChange: input.what_not_to_change ?? [],
 		expectedHandoff: input.expected_handoff ?? [],
 		runtimeSelection: input.agent_tool,
+		dispatchCount: input.dispatch_count,
+		useAllConfiguredAgents: input.use_all_configured_agents,
 		workerName: input.worker_name,
 		config,
 		projectId,
@@ -270,6 +278,8 @@ function normalizeParams(value: unknown): RoleDispatchToolParams {
 		expected_handoff: optionalStringArray(value.expected_handoff),
 		worker_name: optionalString(value.worker_name),
 		agent_tool: optionalString(value.agent_tool),
+		dispatch_count: optionalPositiveInteger(value.dispatch_count, "dispatch_count"),
+		use_all_configured_agents: optionalBoolean(value.use_all_configured_agents, "use_all_configured_agents"),
 		project_id: optionalProjectId(value.project_id),
 	};
 }
@@ -305,6 +315,27 @@ function optionalStringArray(value: unknown): string[] | undefined {
 	return value.flatMap((item) =>
 		typeof item === "string" && item.trim() ? [item.trim()] : []
 	);
+}
+
+function optionalPositiveInteger(value: unknown, key: string): number | undefined {
+	if (value === undefined) {
+		return undefined;
+	}
+	const numberValue = Number(value);
+	if (!Number.isInteger(numberValue) || numberValue <= 0) {
+		throw new Error(`${key} must be a positive integer.`);
+	}
+	return numberValue;
+}
+
+function optionalBoolean(value: unknown, key: string): boolean | undefined {
+	if (value === undefined) {
+		return undefined;
+	}
+	if (typeof value !== "boolean") {
+		throw new Error(`${key} must be a boolean.`);
+	}
+	return value;
 }
 
 function optionalProjectId(value: unknown): number | string | undefined {

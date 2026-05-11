@@ -14,6 +14,8 @@ const context = {
 		soloMcpAvailable: true,
 		messageCount: 4,
 		toolCount: 2,
+		contextUsage: { used: 42000, limit: 256000, approximate: true },
+		queuedInputCount: 1,
 	},
 	tools: [
 		{
@@ -40,6 +42,14 @@ describe("SolistCommandRouter", () => {
 		expect(routeSolistInteractiveInput("/status", context)).toMatchObject({
 			kind: "render",
 			message: expect.stringContaining("openai-codex/gpt-5.5"),
+		});
+		expect(routeSolistInteractiveInput("/status", context)).toMatchObject({
+			kind: "render",
+			message: expect.stringContaining("context: 42k/256k approx"),
+		});
+		expect(routeSolistInteractiveInput("/status", context)).toMatchObject({
+			kind: "render",
+			message: expect.stringContaining("queued inputs: 1"),
 		});
 	});
 

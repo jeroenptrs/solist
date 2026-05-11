@@ -39,6 +39,7 @@ class FakeTimerClient implements WorkerTimerClient {
     runtimeId: string;
     delayMs: number;
     reason: string;
+    waitForIdle?: boolean;
   }> = [];
 
   async setWorkerWakeTimer(input: {
@@ -47,6 +48,7 @@ class FakeTimerClient implements WorkerTimerClient {
     runtimeId: string;
     delayMs: number;
     reason: string;
+    waitForIdle?: boolean;
   }): Promise<{ id: string }> {
     this.schedules.push(input);
     return {
@@ -121,7 +123,8 @@ describe("worker monitoring", () => {
       processId: "proc-running-1",
       runtimeId: "codex",
       delayMs: 2_000,
-      reason: "Worker monitoring wake check."
+      reason: "Worker monitoring idle wake check.",
+      waitForIdle: true
     });
     expect(closeClient.closed).toHaveLength(0);
     expect(handoffCapture.captures).toHaveLength(0);

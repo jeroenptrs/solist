@@ -56,7 +56,8 @@ describe("direct Solo MCP tools", () => {
     );
     expect(tools.find((tool) => tool.name === "solo_mcp_todo_get")?.description)
       .toContain('Maps directly to Solo MCP tool "todo_get"');
-    expect(tools.some((tool) => tool.name.includes("todo_delete"))).toBe(false);
+    expect(tools.map((tool) => tool.name)).toContain("solo_mcp_close_process");
+    expect(tools.map((tool) => tool.name)).toContain("solo_mcp_todo_delete");
   });
 
   it("maps wrapper calls to the underlying Solo MCP tool name", async () => {

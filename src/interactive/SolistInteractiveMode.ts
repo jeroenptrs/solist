@@ -76,6 +76,7 @@ import {
 	isExactSolistInteractiveCommand,
 	routeSolistInteractiveInput,
 	SOLIST_INTERACTIVE_COMMANDS,
+	type SolistContextUsage,
 	type SolistInteractiveCommandContext,
 } from "./SolistCommandRouter.js";
 
@@ -87,6 +88,7 @@ export interface SolistInteractiveHarness {
 	readonly modeId?: SolistModeId;
 	readonly projectId?: number | string;
 	readonly isStreaming: boolean;
+	readonly contextUsage?: SolistContextUsage;
 	readonly authPath?: string;
 	run(prompt: string): Promise<unknown>;
 	abort(): void;
@@ -142,6 +144,7 @@ export class SolistInteractiveMode {
 	private activeAuthInput?: AuthInputWaiter;
 	private session?: SolistSession;
 	private sessionRoleOverrides: SolistRoleBindings = {};
+	private queuedPrompts: string[] = [];
 	private currentAssistant?: {
 		text: string;
 		component: Markdown;
@@ -314,13 +317,15 @@ export class SolistInteractiveMode {
 
 	private async submitPrompt(prompt: string): Promise<void> {
 		if (this.activeTurn) {
-			this.addSystemMessage("Solist is still working. Wait, or press Esc/Ctrl+C to interrupt.");
+			this.queuedPrompts.push(prompt);
+			this.addSystemMessage(`Queued input ${this.queuedPrompts.length}.`);
+			this.updateStatusLine();
 			return;
 		}
 
 		this.activeTurn = true;
 		this.interruptRequested = false;
-		this.editor.disableSubmit = true;
+		this.editor.disableSubmit = false;
 		this.setStatusState("Working");
 		this.setAgentState("thinking");
 
@@ -343,6 +348,11 @@ export class SolistInteractiveMode {
 			this.setAgentState("idle");
 			this.ui.setFocus(this.editor);
 			this.ui.requestRender();
+			const nextPrompt = this.queuedPrompts.shift();
+			if (nextPrompt && !this.stopped) {
+				this.updateStatusLine();
+				await this.submitPrompt(nextPrompt);
+			}
 		}
 	}
 
@@ -632,7 +642,7 @@ export class SolistInteractiveMode {
 			const selectedValues = this.getSelectedAgentToolValues(roleId, agentTools, projectId, action);
 			const selected = await showMultiPicker(this.ui, this.activeTheme, {
 				title: `Select Solo agents for ${roleId}`,
-				subtitle: `${action === "set" ? "Persisted" : "Session-only"} mapping. Multiple agents can be selected.`,
+				subtitle: `${action === "set" ? "Persisted" : "Session-only"} choices. Dispatch uses one by default unless plurality is explicit.`,
 				selectedValues,
 				items: agentTools.map((agentTool): SolistPickerItem => ({
 					value: String(agentTool.id),
@@ -854,6 +864,8 @@ export class SolistInteractiveMode {
 				soloMcpAvailable: this.soloMcpAvailable,
 				messageCount: this.harness.messages.length,
 				toolCount: this.harness.tools.length,
+				contextUsage: this.getContextUsage(),
+				queuedInputCount: this.queuedPrompts.length,
 			},
 			tools: this.harness.tools,
 		};
@@ -1261,6 +1273,8 @@ export class SolistInteractiveMode {
 			this.activeTheme.reasoning(`reasoning:${this.harness.thinkingLevel}`),
 			this.activeTheme.dim(`messages:${this.harness.messages.length}`),
 			this.activeTheme.dim(`tools:${this.harness.tools.length}`),
+			this.activeTheme.dim(`ctx:${formatContextUsage(this.getContextUsage())}`),
+			...(this.queuedPrompts.length > 0 ? [this.activeTheme.warning(`queued:${this.queuedPrompts.length}`)] : []),
 			solo,
 			this.activeTheme.dim(`cwd:${cwdName}`),
 		].join(" | ");
@@ -1280,6 +1294,10 @@ export class SolistInteractiveMode {
 		}
 
 		void this.stop();
+	}
+
+	private getContextUsage(): SolistContextUsage {
+		return this.harness.contextUsage ?? estimateContextUsage(this.harness.messages);
 	}
 
 	private async stop(): Promise<void> {
@@ -1341,6 +1359,28 @@ function safeJson(value: unknown): string {
 	} catch {
 		return String(value);
 	}
+}
+
+function estimateContextUsage(messages: readonly AgentMessage[]): SolistContextUsage {
+	const text = messages.map(extractMessageText).join("\n");
+	return {
+		used: Math.ceil(text.length / 4),
+		approximate: true,
+	};
+}
+
+function formatContextUsage(contextUsage: SolistContextUsage): string {
+	const used = formatTokenCount(contextUsage.used);
+	const limit = contextUsage.limit ? `/${formatTokenCount(contextUsage.limit)}` : "";
+	const approximate = contextUsage.approximate ? "~" : "";
+	return `${approximate}${used}${limit}`;
+}
+
+function formatTokenCount(value: number): string {
+	if (value >= 1000) {
+		return `${Math.round(value / 100) / 10}k`;
+	}
+	return String(value);
 }
 
 type AgentActivityState =

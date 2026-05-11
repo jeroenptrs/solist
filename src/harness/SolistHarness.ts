@@ -52,6 +52,12 @@ export interface SolistHarnessRunResult {
 	messages: AgentMessage[];
 }
 
+export interface SolistHarnessContextUsage {
+	used: number;
+	limit?: number;
+	approximate?: boolean;
+}
+
 export class SolistHarness {
 	private readonly agent: Agent;
 	private readonly output: SolistHarnessOutput;
@@ -116,6 +122,14 @@ export class SolistHarness {
 
 	get isStreaming(): boolean {
 		return this.agent.state.isStreaming;
+	}
+
+	get contextUsage(): SolistHarnessContextUsage {
+		return estimateContextUsage(
+			this.agent.state.messages,
+			this.agent.state.model,
+			this.agent.state.systemPrompt,
+		);
 	}
 
 	subscribe(
@@ -196,6 +210,42 @@ export class SolistHarness {
 			);
 		}
 	}
+}
+
+function estimateContextUsage(
+	messages: readonly AgentMessage[],
+	model: Model<Api>,
+	systemPrompt: string,
+): SolistHarnessContextUsage {
+	const text = [
+		systemPrompt,
+		...messages.map(extractMessageText),
+	].join("\n");
+	const used = Math.ceil(text.length / 4);
+	const contextWindow = "contextWindow" in model && typeof model.contextWindow === "number"
+		? model.contextWindow
+		: undefined;
+	return {
+		used,
+		...(contextWindow ? { limit: contextWindow } : {}),
+		approximate: true,
+	};
+}
+
+function extractMessageText(message: AgentMessage): string {
+	if (!("content" in message)) return "";
+	const contentValue = message.content;
+	if (typeof contentValue === "string") return contentValue;
+	if (Array.isArray(contentValue)) {
+		return contentValue
+			.flatMap((content) =>
+				content.type === "text" && typeof content.text === "string"
+					? [content.text]
+					: []
+			)
+			.join("");
+	}
+	return "";
 }
 
 type AgentEventForAssistantUpdate = Extract<

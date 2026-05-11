@@ -246,6 +246,7 @@ describe("Solo verification orchestration", () => {
       whatNotToChange: [],
       expectedHandoff: [],
       config,
+      useAllConfiguredAgents: true,
     })).rejects.toThrow("spawn failed at 2");
 
     expect(client.closedProcessIds).toEqual(["solo-proc-v1"]);
