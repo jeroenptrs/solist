@@ -39,6 +39,12 @@ export function getSolistConfigPath(
 		: join(resolveSolistHome(env), "config.json");
 }
 
+export function getSolistSessionsDir(
+	env: NodeJS.ProcessEnv = process.env,
+): string {
+	return join(resolveSolistHome(env), "sessions");
+}
+
 export function getSolistMcpConfigPaths(
 	cwd = process.cwd(),
 	env: NodeJS.ProcessEnv = process.env,

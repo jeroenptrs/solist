@@ -12,7 +12,11 @@ export interface SolistRoleBinding {
 	readonly lastKnownName?: string;
 }
 
-export type SolistRoleBindings = Partial<Record<SolistRoleId, SolistRoleBinding>>;
+export interface SolistRoleBindingSet {
+	readonly agents: readonly SolistRoleBinding[];
+}
+
+export type SolistRoleBindings = Partial<Record<SolistRoleId, SolistRoleBindingSet>>;
 
 export interface SolistProjectConfig {
 	readonly activeMode?: SolistModeId;
@@ -37,7 +41,10 @@ export type RoleBindingResolution =
 		readonly status: "selected";
 		readonly roleId: SolistRoleId;
 		readonly source: "session" | "project" | "global";
-		readonly binding: SolistRoleBinding;
+		readonly binding: SolistRoleBindingSet;
+		readonly bindingSet: SolistRoleBindingSet;
+		readonly agentTools: readonly SoloAgentToolReference[];
+		/** First selected agent, retained for single-agent call sites during migration. */
 		readonly agentTool: SoloAgentToolReference;
 	}
 	| {
@@ -121,10 +128,19 @@ export function setSolistRoleBinding(
 	binding: SolistRoleBinding,
 	projectId?: number | string,
 ): SolistConfig {
+	return setSolistRoleBindings(config, roleId, [binding], projectId);
+}
+
+export function setSolistRoleBindings(
+	config: SolistConfig,
+	roleId: SolistRoleId,
+	bindings: readonly SolistRoleBinding[],
+	projectId?: number | string,
+): SolistConfig {
 	if (projectId === undefined) {
 		return {
 			...config,
-			roleBindings: { ...config.roleBindings, [roleId]: normalizeRoleBinding(binding) },
+			roleBindings: { ...config.roleBindings, [roleId]: normalizeRoleBindingSet({ agents: bindings }) },
 		};
 	}
 	const key = String(projectId);
@@ -137,7 +153,7 @@ export function setSolistRoleBinding(
 				...project,
 				roleBindings: {
 					...(project.roleBindings ?? {}),
-					[roleId]: normalizeRoleBinding(binding),
+					[roleId]: normalizeRoleBindingSet({ agents: bindings }),
 				},
 			},
 		},
@@ -174,7 +190,7 @@ export function resolveRoleBinding(input: {
 }): RoleBindingResolution {
 	const candidates: Array<{
 		readonly source: "session" | "project" | "global";
-		readonly binding: SolistRoleBinding | undefined;
+		readonly binding: SolistRoleBindingSet | undefined;
 	}> = [
 		{ source: "session", binding: input.sessionOverrides?.[input.roleId] },
 		{
@@ -190,14 +206,16 @@ export function resolveRoleBinding(input: {
 		if (!candidate.binding) {
 			continue;
 		}
-		const agentTool = resolveAgentTool(candidate.binding, input.availableAgentTools);
-		if (agentTool) {
+		const agentTools = resolveAgentTools(candidate.binding, input.availableAgentTools);
+		if (agentTools.length === candidate.binding.agents.length && agentTools.length > 0) {
 			return {
 				status: "selected",
 				roleId: input.roleId,
 				source: candidate.source,
 				binding: candidate.binding,
-				agentTool,
+				bindingSet: candidate.binding,
+				agentTools,
+				agentTool: agentTools[0]!,
 			};
 		}
 		return {
@@ -233,6 +251,26 @@ export function resolveAgentToolSelection(
 	);
 }
 
+export function resolveAgentToolSelections(
+	selection: string,
+	availableAgentTools: readonly SoloAgentToolReference[],
+): SoloAgentToolReference[] {
+	const unwrappedSelection = stripWrappingQuotes(selection.trim());
+	const parts = unwrappedSelection.split(",").map((part) => part.trim()).filter(Boolean);
+	const selections = parts.length > 0 ? parts : [unwrappedSelection];
+	const selected: SoloAgentToolReference[] = [];
+	for (const part of selections) {
+		const tool = resolveAgentToolSelection(part, availableAgentTools);
+		if (!tool) {
+			return [];
+		}
+		if (!selected.some((candidate) => candidate.id === tool.id)) {
+			selected.push(tool);
+		}
+	}
+	return selected;
+}
+
 function stripWrappingQuotes(value: string): string {
 	if (
 		(value.startsWith("\"") && value.endsWith("\""))
@@ -248,6 +286,19 @@ export function bindingForAgentTool(agentTool: SoloAgentToolReference): SolistRo
 		agentToolId: agentTool.id,
 		lastKnownName: agentTool.name,
 	};
+}
+
+export function bindingsForAgentTools(
+	agentTools: readonly SoloAgentToolReference[],
+): SolistRoleBinding[] {
+	return agentTools.map((agentTool) => bindingForAgentTool(agentTool));
+}
+
+export function formatRoleBindingSet(bindingSet: SolistRoleBindingSet | undefined): string {
+	if (!bindingSet || bindingSet.agents.length === 0) {
+		return "unconfigured";
+	}
+	return bindingSet.agents.map((binding) => formatRoleBinding(binding)).join(", ");
 }
 
 function normalizeSolistConfig(value: unknown): SolistConfig {
@@ -291,15 +342,41 @@ function normalizeRoleBindings(value: unknown): SolistRoleBindings {
 		return {};
 	}
 	const entries = Object.entries(value).flatMap(([roleId, binding]) => {
-		if (!isSolistRoleId(roleId) || !isRecord(binding)) {
+		if (!isSolistRoleId(roleId)) {
 			return [];
 		}
-		return [[roleId, normalizeRoleBinding(binding)] as const];
+		const normalized = normalizeRoleBindingSet(binding);
+		if (normalized.agents.length === 0) {
+			return [];
+		}
+		return [[roleId, normalized] as const];
 	});
 	return Object.fromEntries(entries) as SolistRoleBindings;
 }
 
-function normalizeRoleBinding(value: SolistRoleBinding): SolistRoleBinding {
+function normalizeRoleBindingSet(value: unknown): SolistRoleBindingSet {
+	if (Array.isArray(value)) {
+		return { agents: dedupeBindings(value.flatMap((item) =>
+			isRecord(item) ? [normalizeRoleBinding(item)] : []
+		)) };
+	}
+	if (!isRecord(value)) {
+		return { agents: [] };
+	}
+	if (Array.isArray(value.agents)) {
+		return {
+			agents: dedupeBindings(value.agents.flatMap((item) =>
+				isRecord(item) ? [normalizeRoleBinding(item)] : []
+			)),
+		};
+	}
+	return { agents: dedupeBindings([normalizeRoleBinding(value)]) };
+}
+
+function normalizeRoleBinding(value: unknown): SolistRoleBinding {
+	if (!isRecord(value)) {
+		return {};
+	}
 	return {
 		...(typeof value.agentToolId === "number" && Number.isInteger(value.agentToolId)
 			? { agentToolId: value.agentToolId }
@@ -311,6 +388,38 @@ function normalizeRoleBinding(value: SolistRoleBinding): SolistRoleBinding {
 			? { lastKnownName: value.lastKnownName.trim() }
 			: {}),
 	};
+}
+
+function dedupeBindings(bindings: readonly SolistRoleBinding[]): SolistRoleBinding[] {
+	const seen = new Set<string>();
+	return bindings.filter((binding) => {
+		if (!binding.agentToolId && !binding.agentToolName && !binding.lastKnownName) {
+			return false;
+		}
+		const key = binding.agentToolId !== undefined
+			? `id:${binding.agentToolId}`
+			: `name:${(binding.agentToolName ?? binding.lastKnownName ?? "").toLowerCase()}`;
+		if (seen.has(key)) {
+			return false;
+		}
+		seen.add(key);
+		return true;
+	});
+}
+
+function resolveAgentTools(
+	bindingSet: SolistRoleBindingSet,
+	availableAgentTools: readonly SoloAgentToolReference[],
+): SoloAgentToolReference[] {
+	const selected: SoloAgentToolReference[] = [];
+	for (const binding of bindingSet.agents) {
+		const agentTool = resolveAgentTool(binding, availableAgentTools);
+		if (!agentTool || selected.some((tool) => tool.id === agentTool.id)) {
+			continue;
+		}
+		selected.push(agentTool);
+	}
+	return selected;
 }
 
 function resolveAgentTool(
@@ -328,6 +437,16 @@ function resolveAgentTool(
 		return enabled.find((tool) => tool.name.toLowerCase() === normalized);
 	}
 	return undefined;
+}
+
+function formatRoleBinding(binding: SolistRoleBinding): string {
+	if (binding.agentToolId !== undefined && binding.lastKnownName) {
+		return `${binding.agentToolId} (${binding.lastKnownName})`;
+	}
+	if (binding.agentToolId !== undefined) {
+		return String(binding.agentToolId);
+	}
+	return binding.agentToolName ?? binding.lastKnownName ?? "unconfigured";
 }
 
 function enabledAgentTools(

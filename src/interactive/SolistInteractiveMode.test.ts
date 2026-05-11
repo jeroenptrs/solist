@@ -2,6 +2,7 @@ import type { AgentEvent, AgentMessage, ThinkingLevel } from "@earendil-works/pi
 import type { Terminal } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import { SolistInteractiveMode, type SolistInteractiveHarness } from "./SolistInteractiveMode.js";
+import type { SolistSession } from "../solistSessions.js";
 
 class FakeTerminal implements Terminal {
 	private onInput?: (data: string) => void;
@@ -56,12 +57,15 @@ function createHarness(options: {
 	close?: () => void | Promise<void>;
 	logout?: (provider: string) => Promise<void> | void;
 	getProviderName?: (provider: string) => Promise<string> | string;
+	modeId?: SolistInteractiveHarness["modeId"];
+	thinkingLevel?: ThinkingLevel;
 } = {}): SolistInteractiveHarness {
 	return {
 		messages: [] satisfies AgentMessage[],
 		tools: [],
 		modelRef: { provider: "openai-codex", model: "gpt-5.5" },
-		thinkingLevel: "off" as ThinkingLevel,
+		thinkingLevel: options.thinkingLevel ?? "off" as ThinkingLevel,
+		modeId: options.modeId,
 		isStreaming: false,
 		authPath: options.authPath,
 		async run() {},
@@ -91,6 +95,23 @@ function createDeferred(): { promise: Promise<void>; resolve: () => void } {
 	return { promise, resolve };
 }
 
+function testSession(input: {
+	id: string;
+	updatedAt: string;
+	messages: readonly AgentMessage[];
+}): SolistSession {
+	return {
+		schema: "solist.session.v1",
+		id: input.id,
+		title: input.id,
+		cwd: "/tmp/project",
+		modeId: "orchestration",
+		createdAt: "2026-05-11T09:00:00.000Z",
+		updatedAt: input.updatedAt,
+		messages: input.messages,
+	};
+}
+
 describe("SolistInteractiveMode", () => {
 	it("renders a colored Solist ascii banner in the welcome area", async () => {
 		const terminal = new FakeTerminal();
@@ -104,7 +125,28 @@ describe("SolistInteractiveMode", () => {
 
 		expect(terminal.output).toContain("____        _ _     _");
 		expect(terminal.output).toContain("Solo orchestration agent");
-		expect(terminal.output).toContain("\x1b[36m");
+		expect(terminal.output).toContain("\x1b[36m  ____");
+
+		terminal.send("/exit\r");
+		await done;
+	});
+
+	it("renders the Solist ascii banner with the active mode color", async () => {
+		const terminal = new FakeTerminal();
+		const mode = new SolistInteractiveMode(createHarness({
+			modeId: "analysis",
+			thinkingLevel: "high",
+		}), {
+			terminal,
+			cwd: "/tmp/project",
+		});
+
+		const done = mode.run();
+		await waitForRender();
+
+		expect(terminal.output).toContain("____        _ _     _");
+		expect(terminal.output).toContain("\x1b[35m  ____");
+		expect(terminal.output).toContain("reasoning:high");
 
 		terminal.send("/exit\r");
 		await done;
@@ -237,6 +279,91 @@ describe("SolistInteractiveMode", () => {
 
 		releaseRun.resolve();
 		await waitForRender();
+		terminal.send("/exit\r");
+		await done;
+	});
+
+	it("does not render internal role override context from user messages", async () => {
+		const terminal = new FakeTerminal();
+		let listener: ((event: AgentEvent, signal: AbortSignal) => Promise<void> | void) | undefined;
+		const signal = new AbortController().signal;
+		const harness = {
+			...createHarness(),
+			async run() {
+				listener?.({
+					type: "message_start",
+					message: {
+						role: "user",
+						content: [{
+							type: "text",
+							text: [
+								"Session role overrides for this Solist process:",
+								"- reviewer -> 7 (Codex High)",
+								"",
+								"Please review this patch",
+							].join("\n"),
+						}],
+					} as AgentMessage,
+				} as AgentEvent, signal);
+			},
+			subscribe(nextListener: (event: AgentEvent, signal: AbortSignal) => Promise<void> | void) {
+				listener = nextListener;
+				return () => {
+					listener = undefined;
+				};
+			},
+		} satisfies SolistInteractiveHarness;
+		const mode = new SolistInteractiveMode(harness, {
+			terminal,
+			showWelcome: false,
+		});
+
+		const done = mode.run("start");
+		await waitForRender();
+
+		expect(terminal.output).toContain("Please review this patch");
+		expect(terminal.output).not.toContain("Session role overrides");
+		expect(terminal.output).not.toContain("reviewer ->");
+
+		terminal.send("/exit\r");
+		await done;
+	});
+
+	it("resumes the previous session for /resume latest instead of the active empty session", async () => {
+		const terminal = new FakeTerminal();
+		const activeSession = testSession({
+			id: "current-empty",
+			updatedAt: "2026-05-11T09:40:00.000Z",
+			messages: [],
+		});
+		const previousSession = testSession({
+			id: "previous-chat",
+			updatedAt: "2026-05-11T09:30:00.000Z",
+			messages: [
+				{ role: "user", content: [{ type: "text", text: "Previous prompt" }], timestamp: 1 },
+			] satisfies AgentMessage[],
+		});
+		const createdHarnessMessages: Array<readonly AgentMessage[]> = [];
+		const mode = new SolistInteractiveMode(createHarness({ modeId: "orchestration" }), {
+			terminal,
+			showWelcome: false,
+			session: activeSession,
+			listSessions: () => [activeSession, previousSession],
+			readSession: (id) => id === previousSession.id ? previousSession : activeSession,
+			createHarnessForMode: async (_modeId, context) => {
+				createdHarnessMessages.push(context.messages);
+				return createHarness({ modeId: "analysis" });
+			},
+		});
+
+		const done = mode.run();
+		terminal.send("/resume latest\r");
+		await waitForRender();
+
+		expect(createdHarnessMessages).toEqual([[previousSession.messages[0]!]]);
+		expect(terminal.output).toContain("Previous prompt");
+		expect(terminal.output).toContain("Resumed Solist session previous-chat");
+
 		terminal.send("/exit\r");
 		await done;
 	});

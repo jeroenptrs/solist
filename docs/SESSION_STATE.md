@@ -24,14 +24,16 @@ By storing this in a scratchpad, the plan remains human-readable and inspectable
 
 ## Conversation History
 
-### In-Memory History (Current)
+### Local Session Snapshots
 
-The `SolistHarness` maintains conversation history in memory. 
+The `SolistHarness` maintains conversation history in memory while a chat is running. Interactive `solist` sessions are also snapshotted to local JSON files so they can be resumed later.
 
-- **Pros**: Simple, no local file management, avoids leaking conversation details into the repository.
-- **Cons**: History is lost if the `solist` process restarts.
+- **Storage**: `~/.solist/sessions/*.json`, or the equivalent directory under `SOLIST_HOME`.
+- **Schema**: `solist.session.v1`.
+- **Contents**: session id, title, cwd, Solo project id when known, mode id, timestamps, and `AgentMessage[]`.
+- **Privacy**: session files contain prompts, responses, and tool context. They are local Solist state and should be treated as private.
 
-The harness supports manual message injection, allowing a caller to resume a conversation if it manages the transient history itself, but `solist` does not currently persist this history to disk.
+The harness supports manual message injection, and `/resume` uses that path to rebuild the active harness from a stored transcript without rerunning old prompts.
 
 ### Recovery Strategy
 
@@ -41,14 +43,15 @@ The harness supports manual message injection, allowing a caller to resume a con
 2. By listing scratchpads and todos, it can identify active plans and their current status.
 3. Key decisions and the "intent" of the plan are preserved in the scratchpad, allowing a new session to pick up where the previous one left off.
 
-## Session Store (Future/Deferred)
+## Session Store
 
-A lightweight, local session store may be added in a future work package only if interactive usability (e.g., a persistent TUI) requires it. Currently, it is NOT implemented. If implemented in the future, it will follow these rules:
+The local session store is intentionally separate from durable Solo orchestration state:
 
-- **Opt-in**: Persistent history must be explicitly enabled or associated with a session ID.
-- **Storage**: Sessions will be stored in a `.solist/sessions/` directory (git-ignored).
-- **Format**: Simple JSON lines or similar lightweight format.
-- **No Shared State**: Sessions are independent of the durable Solo orchestration state.
+- `/resume` opens a TUI picker for recent sessions.
+- `/resume latest` resumes the most recently updated local session.
+- `solist sessions list` prints stored session ids.
+- `solist resume latest` or `solist resume <session-id>` starts directly from a stored session.
+- Sessions are independent of Solo scratchpads/todos; restarting from a session restores conversation context, not worker process lifecycle state.
 
 ## Summary of State Ownership
 
@@ -60,7 +63,7 @@ A lightweight, local session store may be added in a future work package only if
 | Blockers/Deps | Solo | Todo Blockers |
 | Active Mode | Solist | `~/.solist/config.json` or `SOLIST_CONFIG_PATH` |
 | Role Bindings | Solist | `~/.solist/config.json` or `SOLIST_CONFIG_PATH` |
-| Conversation History | Solist | In-Memory (Transient) |
+| Conversation History | Solist | `~/.solist/sessions/*.json` plus in-memory active harness state |
 | Active Processes | Solo | Solo Processes |
 
 ## Local Solist Configuration
@@ -81,7 +84,7 @@ Changing the persisted mode in the default interactive Solist path also rebuilds
 
 ### Role Bindings
 
-Role bindings map orchestration roles such as `patch-worker`, `feature-worker`, `refactor-worker`, `reviewer`, and `verifier` to Solo agent tools returned by `list_agent_tools`.
+Role bindings map orchestration roles such as `patch-worker`, `feature-worker`, `refactor-worker`, `reviewer`, and `verifier` to one or more Solo agent tools returned by `list_agent_tools`.
 
 Resolution order during orchestration is:
 
@@ -91,6 +94,6 @@ Resolution order during orchestration is:
 
 The role vocabulary and binding configuration are local Solist state. Worker assignments, handoffs, blocker updates, and verification evidence still belong in Solo todos and scratchpads.
 
-Interactive `/role-switch` and `/role override` commands create session-only role bindings. They affect later prompts in the same running Solist process, but they are not written to the config file unless the user uses `/role set` or the headless `solist roles set` command.
+Interactive `/role-switch` and `/role override` commands create session-only role bindings. They affect later prompts in the same running Solist process, but they are not written to the config file unless the user uses `/role set` or the headless `solist roles set` command. `/role` and `/roles` open TUI selectors for choosing roles and one or more Solo agents.
 
-In orchestration mode, `solist_dispatch_role` is the preferred worker handoff path. It resolves the role binding, spawns the configured Solo agent, sends the role-framed assignment, and records the assignment comment on the Solo todo. Verification dispatch uses the same role-binding resolution path for the `verifier` role.
+In orchestration mode, `solist_dispatch_role` is the preferred worker handoff path. It resolves the role binding, spawns every configured Solo agent for the role unless an explicit single `agent_tool` override is supplied, sends the role-framed assignment, and records the assignment comment on the Solo todo. Verification dispatch uses the same role-binding resolution path for the `verifier` role.

@@ -10,7 +10,7 @@ import { parseSoloAgentTools, parseSoloToolJson } from "../soloAgentTools.js";
 import { resolveSolistRoleId, type SolistRoleId } from "../solistRoles.js";
 import type { SoloTodo } from "../soloPlanning.js";
 import {
-	assignmentComment,
+	assignmentCommentForProcesses,
 	buildWorkerPrompt,
 	selectWorkerRuntimeForDispatch,
 	type SoloWorkerProcess,
@@ -129,24 +129,39 @@ async function dispatchRole(
 		projectId,
 		sessionRoleOverrides: options.sessionRoleOverrides?.(),
 	});
-	const process = await spawnRoleProcess(client, selection.runtime, prompt, input.worker_name);
-	await client.callTool("todo_comment_create", {
-		todo_id: input.todo_id,
-		body: assignmentComment(selection.runtime, process, roleId),
-		response_mode: "slim",
-	});
+	const processes: SoloWorkerProcess[] = [];
+	try {
+		for (const runtime of selection.selectedRuntimes) {
+			processes.push(await spawnRoleProcess(
+				client,
+				runtime,
+				prompt,
+				workerNameForRuntime(input.worker_name, runtime, selection.selectedRuntimes.length),
+			));
+		}
+		await client.callTool("todo_comment_create", {
+			todo_id: input.todo_id,
+			body: assignmentCommentForProcesses(selection.selectedRuntimes, processes, roleId),
+			response_mode: "slim",
+		});
+	} catch (error) {
+		await cleanupRoleProcesses(client, processes);
+		throw error;
+	}
 
 	return text([
 		"Solist role dispatch spawned a Solo subagent.",
 		`Role: ${roleId}`,
-		`Agent tool: ${selection.runtime.id} (${selection.runtime.name})`,
-		`Process: ${process.id} (${process.name})`,
+		`Agent tools: ${selection.selectedRuntimes.map((runtime) => `${runtime.id} (${runtime.name})`).join(", ")}`,
+		`Processes: ${processes.map((process) => `${process.id} (${process.name})`).join(", ")}`,
 		`Todo comment: ${input.todo_id}`,
 	].join("\n"), {
 		status: "spawned",
 		roleId,
 		agentTool: selection.runtime,
-		process,
+		agentTools: selection.selectedRuntimes,
+		process: processes[0],
+		processes,
 		todo,
 		prompt,
 	});
@@ -177,14 +192,28 @@ async function spawnRoleProcess(
 		include_agent_instructions: false,
 		...(name ? { name } : {}),
 	}));
-	await client.callTool("send_input", {
-		process_id: spawnResult.processId,
-		input: prompt,
-	});
+	try {
+		await client.callTool("send_input", {
+			process_id: spawnResult.processId,
+			input: prompt,
+		});
+	} catch (error) {
+		await cleanupRoleProcesses(client, [{ id: String(spawnResult.processId), name: spawnResult.name }]);
+		throw error;
+	}
 	return {
 		id: String(spawnResult.processId),
 		name: spawnResult.name,
 	};
+}
+
+async function cleanupRoleProcesses(
+	client: SoloMcpClient,
+	processes: readonly SoloWorkerProcess[],
+): Promise<void> {
+	await Promise.allSettled(processes.map((process) => client.callTool("close_process", {
+		process_id: Number(process.id),
+	})));
 }
 
 function parseSoloProcess(result: SoloMcpToolCallResult): { processId: number; name: string } {
@@ -202,6 +231,18 @@ function parseSoloProcess(result: SoloMcpToolCallResult): { processId: number; n
 			? parsed.name
 			: String(processId),
 	};
+}
+
+function workerNameForRuntime(
+	baseName: string | undefined,
+	runtime: SoloWorkerRuntime,
+	count: number,
+): string | undefined {
+	if (count <= 1) {
+		return baseName;
+	}
+	const suffix = runtime.id.replace(/[^a-zA-Z0-9_-]+/g, "-");
+	return `${baseName ?? "role-worker"}-${suffix}`;
 }
 
 function normalizeParams(value: unknown): RoleDispatchToolParams {

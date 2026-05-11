@@ -62,7 +62,7 @@ With a global install, the equivalent command is:
 solist "Inspect todo 207 and propose the next Solo worker handoff"
 ```
 
-Inside the chat, press `/` at the start of the prompt to open the command overview, type `/help` for the Solist command set, use `/login` / `/logout` to manage Solist's Codex credentials, `/mode` to inspect or persist the active mode, `/roles` and `/role set` to manage role-to-Solo-agent bindings, or `/exit` / `/quit` to stop the process. Assistant responses, tool calls, and tool completion events render in the same chat surface above the editor. The status line shows the current state, model, reasoning level, message count, tool count, Solo MCP availability, and cwd.
+Inside the chat, press `/` at the start of the prompt to open the command overview, type `/help` for the Solist command set, use `/login` / `/logout` to manage Solist's Codex credentials, `/mode` to choose the active mode with arrow keys, `/roles` and `/role` to manage role-to-Solo-agent bindings in the TUI, `/resume` to reopen persisted conversations, or `/exit` / `/quit` to stop the process. Assistant responses, tool calls, and tool completion events render in the same chat surface above the editor. The status line shows the current state, model, reasoning level, message count, tool count, Solo MCP availability, and cwd.
 
 You can also provide a prompt on stdin when no prompt arguments are present. Piped stdin is non-interactive, so Solist treats it as a batch prompt and exits after the response:
 
@@ -131,7 +131,7 @@ In the default harness, local workspace access is read-only. The orchestrator ca
 
 ### State Model
 
-Durable orchestration state belongs in Solo: plans, todos, blockers, worker handoffs, process state, and comments should be recoverable from Solo scratchpads and todos. Conversation history for a `solist` chat is kept in memory by the running harness process and is discarded when that process exits.
+Durable orchestration state belongs in Solo: plans, todos, blockers, worker handoffs, process state, and comments should be recoverable from Solo scratchpads and todos. Conversation history for a `solist` chat is also snapshotted locally under `~/.solist/sessions` so the TUI can resume previous conversations.
 
 ## Configuration
 
@@ -163,6 +163,8 @@ Manage modes interactively:
 /mode analysis
 /mode deep-analysis --project
 ```
+
+Calling `/mode` without an argument opens an arrow-key selector that shows the current mode, provider/model, reasoning effort, and role-spawning policy. Each mode uses a distinct TUI accent color; the status line reasoning segment follows the selected mode color.
 
 Or headlessly:
 
@@ -196,7 +198,9 @@ Manage role mappings interactively:
 /roles
 /roles doctor
 /roles --project
+/role
 /role set reviewer Gemini
+/role set reviewer "Codex High, Gemini"
 /role set patch-worker Codex
 /role set feature-worker "Codex High"
 /role set refactor-worker "Codex XHigh"
@@ -211,15 +215,32 @@ Or headlessly:
 ```bash
 solist roles list
 solist roles set reviewer Gemini
+solist roles set reviewer "Codex High, Gemini"
 solist roles unset reviewer
 solist roles doctor
 solist roles list --project current
 solist roles set verifier "Codex High" --project 11
 ```
 
-Role bindings are validated against Solo's configured agent tools via `list_agent_tools`. `/role-switch` and `/role override` affect prompts submitted later in the same Solist process; persisted bindings live in Solist config.
+Role bindings are validated against Solo's configured agent tools via `list_agent_tools`. A role can map to one or more Solo agent tools. When a mapped role is dispatched without an explicit `agent_tool` override, Solist spawns one Solo process per mapped agent and records all process assignments on the Solo todo. `/role-switch` and `/role override` affect prompts submitted later in the same Solist process; persisted bindings live in Solist config.
 
-When roles are enabled, the orchestrator gets a Solist-owned `solist_dispatch_role` tool. It resolves the configured global, project, or session-provided Solo agent choice, spawns the Solo agent, sends the role-framed assignment with `send_input`, and records the assignment comment on the Solo todo. The raw `solo_mcp_spawn_process` and `solo_mcp_send_input` tools remain available for handoff shapes that need lower-level control.
+When roles are enabled, the orchestrator gets a Solist-owned `solist_dispatch_role` tool. It resolves the configured global, project, or session-provided Solo agent choices, spawns the Solo agents, sends the role-framed assignment with `send_input`, and records the assignment comment on the Solo todo. The raw `solo_mcp_spawn_process` and `solo_mcp_send_input` tools remain available for handoff shapes that need lower-level control.
+
+### Sessions and Resume
+
+Interactive conversations are saved as JSON snapshots in `~/.solist/sessions`. These files contain conversation text and model/tool context, so treat them as local private data. Use the TUI picker or CLI commands to resume:
+
+```text
+/resume
+/resume latest
+/resume <session-id>
+```
+
+```bash
+solist sessions list
+solist resume latest
+solist resume <session-id>
+```
 
 ### MCP Allowlist
 

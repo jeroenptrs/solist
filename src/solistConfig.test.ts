@@ -7,10 +7,12 @@ import {
 	defaultSolistConfig,
 	getConfiguredSolistMode,
 	readSolistConfig,
+	resolveAgentToolSelections,
 	resolveAgentToolSelection,
 	resolveRoleBinding,
 	setSolistActiveMode,
 	setSolistRoleBinding,
+	setSolistRoleBindings,
 	unsetSolistRoleBinding,
 	writeSolistConfig,
 } from "./solistConfig.js";
@@ -37,7 +39,7 @@ describe("Solist config", () => {
 			schema: "solist.config.v1",
 			activeMode: "analysis",
 			roleBindings: {
-				reviewer: { agentToolId: 1, lastKnownName: "Gemini" },
+				reviewer: { agents: [{ agentToolId: 1, lastKnownName: "Gemini" }] },
 			},
 		});
 		expect(readFileSync(path, "utf8")).toContain("\"activeMode\": \"analysis\"");
@@ -71,10 +73,10 @@ describe("Solist config", () => {
 		const config = readSolistConfig(path);
 
 		expect(config.activeMode).toBe("orchestration");
-		expect(config.roleBindings).toEqual({ "patch-worker": { agentToolId: 4 } });
+		expect(config.roleBindings).toEqual({ "patch-worker": { agents: [{ agentToolId: 4 }] } });
 		expect(getConfiguredSolistMode(config, 11)).toBe("deep-analysis");
 		expect(config.projectOverrides["11"]?.roleBindings).toEqual({
-			"feature-worker": { agentToolName: "Codex High" },
+			"feature-worker": { agents: [{ agentToolName: "Codex High" }] },
 		});
 	});
 
@@ -105,7 +107,7 @@ describe("Solist config", () => {
 			config,
 			projectId: 11,
 			availableAgentTools: tools,
-			sessionOverrides: { "patch-worker": { agentToolId: 4 } },
+			sessionOverrides: { "patch-worker": { agents: [{ agentToolId: 4 }] } },
 		})).toMatchObject({
 			status: "selected",
 			source: "session",
@@ -138,12 +140,52 @@ describe("Solist config", () => {
 		const config = setSolistRoleBinding(defaultSolistConfig(), "verifier", bindingForAgentTool(tool));
 
 		expect(config.roleBindings.verifier).toEqual({
-			agentToolId: 27,
-			lastKnownName: "Codex High",
+			agents: [{ agentToolId: 27, lastKnownName: "Codex High" }],
 		});
 		expect(unsetSolistRoleBinding(config, "verifier").roleBindings.verifier).toBeUndefined();
 		expect(resolveAgentToolSelection("27", [tool])).toEqual(tool);
 		expect(resolveAgentToolSelection("codex high", [tool])).toEqual(tool);
 		expect(resolveAgentToolSelection("\"Codex High\"", [tool])).toEqual(tool);
+	});
+
+	it("rejects multi-agent selections when any token is invalid", () => {
+		const tools = [
+			{ id: 27, name: "Codex High", enabled: true },
+			{ id: 31, name: "Gemini", enabled: true },
+		];
+
+		expect(resolveAgentToolSelections("Codex High, Missing Agent", tools)).toEqual([]);
+		expect(resolveAgentToolSelections("Codex High, Gemini", tools)).toEqual(tools);
+	});
+
+	it("stores and resolves multiple Solo agent bindings for one role", () => {
+		const tools = [
+			{ id: 27, name: "Codex High", enabled: true },
+			{ id: 31, name: "Gemini", enabled: true },
+		];
+		const config = setSolistRoleBindings(
+			defaultSolistConfig(),
+			"reviewer",
+			[
+				{ agentToolId: 27, lastKnownName: "Codex High" },
+				{ agentToolId: 31, lastKnownName: "Gemini" },
+			],
+		);
+
+		expect(config.roleBindings.reviewer).toEqual({
+			agents: [
+				{ agentToolId: 27, lastKnownName: "Codex High" },
+				{ agentToolId: 31, lastKnownName: "Gemini" },
+			],
+		});
+		expect(resolveRoleBinding({
+			roleId: "reviewer",
+			config,
+			availableAgentTools: tools,
+		})).toMatchObject({
+			status: "selected",
+			agentTools: [{ id: 27 }, { id: 31 }],
+		});
+		expect(resolveAgentToolSelections("\"Codex High, Gemini\"", tools)).toEqual(tools);
 	});
 });

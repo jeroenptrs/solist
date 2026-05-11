@@ -10,7 +10,7 @@ import {
   VERIFICATION_OVERRIDE_TAG
 } from "./soloVerification.js";
 import type { SoloTodo } from "./soloPlanning.js";
-import { defaultSolistConfig, setSolistRoleBinding } from "./solistConfig.js";
+import { defaultSolistConfig, setSolistRoleBinding, setSolistRoleBindings } from "./solistConfig.js";
 import { 
   type SoloWorkerClient, 
   type SoloWorkerProcess, 
@@ -20,11 +20,13 @@ import {
 class FakeWorkerClient implements SoloWorkerClient {
   public spawnCalls: Array<{ runtimeId: string; prompt: string; name?: string }> = [];
   public commentsAdded: Array<{ uri: string; body: string }> = [];
+  public closedProcessIds: string[] = [];
 
   constructor(
     public runtimes: SoloWorkerRuntime[],
     public todo: SoloTodo,
-    private readonly process: SoloWorkerProcess = { id: "proc-1", name: "Worker 1" }
+    private readonly process: SoloWorkerProcess = { id: "proc-1", name: "Worker 1" },
+    private readonly failSpawnAt?: number
   ) {}
 
   async listWorkerRuntimes(): Promise<SoloWorkerRuntime[]> {
@@ -37,6 +39,9 @@ class FakeWorkerClient implements SoloWorkerClient {
     name?: string;
   }): Promise<SoloWorkerProcess> {
     this.spawnCalls.push(input);
+    if (this.failSpawnAt === this.spawnCalls.length) {
+      throw new Error(`spawn failed at ${this.spawnCalls.length}`);
+    }
     return this.process;
   }
 
@@ -47,6 +52,10 @@ class FakeWorkerClient implements SoloWorkerClient {
       comments: [...this.todo.comments, { body }]
     };
     return this.todo;
+  }
+
+  async closeWorkerProcess(processId: string): Promise<void> {
+    this.closedProcessIds.push(processId);
   }
 }
 
@@ -217,5 +226,29 @@ describe("Solo verification orchestration", () => {
 
     expect(result.status).toBe("spawned");
     expect(client.spawnCalls[0]?.runtimeId).toBe("codex-high");
+  });
+
+  it("closes already spawned verifier workers when a later multi-runtime spawn fails", async () => {
+    const client = new FakeWorkerClient([
+      { id: "27", name: "Codex High" },
+      { id: "31", name: "Gemini" },
+    ], baseTodo, { id: "solo-proc-v1", name: "verifier-27" }, 2);
+    const config = setSolistRoleBindings(defaultSolistConfig(), "verifier", [
+      { agentToolId: 27, lastKnownName: "Codex High" },
+      { agentToolId: 31, lastKnownName: "Gemini" },
+    ]);
+
+    await expect(dispatchVerification(client, {
+      objective: "Verify the new verification path.",
+      scratchpadUri: "solo://proj/11/scratchpad/50",
+      todo: baseTodo,
+      ownershipBoundaries: [],
+      whatNotToChange: [],
+      expectedHandoff: [],
+      config,
+    })).rejects.toThrow("spawn failed at 2");
+
+    expect(client.closedProcessIds).toEqual(["solo-proc-v1"]);
+    expect(client.commentsAdded).toEqual([]);
   });
 });

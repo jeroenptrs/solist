@@ -26,6 +26,7 @@ export interface SoloWorkerClient {
     name?: string;
   }): Promise<SoloWorkerProcess>;
   addTodoComment(uri: string, body: string): Promise<SoloTodo>;
+  closeWorkerProcess?(processId: string): Promise<void>;
 }
 
 export interface WorkerDispatchRequest {
@@ -48,6 +49,7 @@ export interface WorkerDispatchRequest {
 export type WorkerRuntimeSelectionResult =
   | {
       status: "selected";
+      selectedRuntimes: SoloWorkerRuntime[];
       runtime: SoloWorkerRuntime;
       runtimes: SoloWorkerRuntime[];
     }
@@ -60,7 +62,9 @@ export type WorkerRuntimeSelectionResult =
 export type WorkerDispatchResult =
   | {
       status: "spawned";
+      runtimes: SoloWorkerRuntime[];
       runtime: SoloWorkerRuntime;
+      processes: SoloWorkerProcess[];
       process: SoloWorkerProcess;
       prompt: string;
       todo: SoloTodo;
@@ -105,18 +109,21 @@ export async function selectWorkerRuntimeForDispatch(
       };
     }
 
-    const selected = runtimes.find((runtime) =>
-      runtime.name === resolution.agentTool.name
-      || Number(runtime.id) === resolution.agentTool.id
-    );
-    if (!selected) {
+    const selected = resolution.agentTools.flatMap((agentTool) => {
+      const runtime = runtimes.find((candidate) =>
+        candidate.name === agentTool.name
+        || Number(candidate.id) === agentTool.id
+      );
+      return runtime ? [runtime] : [];
+    });
+    if (selected.length !== resolution.agentTools.length) {
       return {
         status: "decision-needed",
-        reason: `Resolved Solo agent tool ${resolution.agentTool.id} (${resolution.agentTool.name}) is not available as a worker runtime.`,
+        reason: `One or more resolved Solo agent tools are not available as worker runtimes: ${resolution.agentTools.map((agentTool) => `${agentTool.id} (${agentTool.name})`).join(", ")}.`,
         runtimes
       };
     }
-    return { status: "selected", runtime: selected, runtimes };
+    return { status: "selected", runtime: selected[0]!, selectedRuntimes: selected, runtimes };
   }
 
   return selectWorkerRuntimeFromList(runtimes, undefined);
@@ -137,11 +144,11 @@ function selectWorkerRuntimeFromList(
         runtimes
       };
     }
-    return { status: "selected", runtime: selected, runtimes };
+    return { status: "selected", runtime: selected, selectedRuntimes: [selected], runtimes };
   }
 
   if (runtimes.length === 1) {
-    return { status: "selected", runtime: runtimes[0], runtimes };
+    return { status: "selected", runtime: runtimes[0], selectedRuntimes: [runtimes[0]], runtimes };
   }
 
   return {
@@ -206,23 +213,44 @@ export async function dispatchWorker(
 
   const roleId = request.roleId ?? resolveSolistRoleId(request.role);
   const prompt = buildWorkerPrompt(request);
-  const process = await client.spawnWorker({
-    runtimeId: selection.runtime.id,
-    prompt,
-    name: request.workerName
-  });
-  const todo = await client.addTodoComment(
-    request.todo.uri,
-    assignmentComment(selection.runtime, process, roleId)
-  );
+  const processes: SoloWorkerProcess[] = [];
+  let todo: SoloTodo;
+  try {
+    for (const runtime of selection.selectedRuntimes) {
+      processes.push(await client.spawnWorker({
+        runtimeId: runtime.id,
+        prompt,
+        name: workerNameForRuntime(request.workerName, runtime, selection.selectedRuntimes.length)
+      }));
+    }
+    todo = await client.addTodoComment(
+      request.todo.uri,
+      assignmentCommentForProcesses(selection.selectedRuntimes, processes, roleId)
+    );
+  } catch (error) {
+    await cleanupSpawnedWorkers(client, processes);
+    throw error;
+  }
 
   return {
     status: "spawned",
     runtime: selection.runtime,
-    process,
+    runtimes: selection.selectedRuntimes,
+    process: processes[0]!,
+    processes,
     prompt,
     todo
   };
+}
+
+async function cleanupSpawnedWorkers(
+  client: SoloWorkerClient,
+  processes: readonly SoloWorkerProcess[]
+): Promise<void> {
+  if (!client.closeWorkerProcess || processes.length === 0) {
+    return;
+  }
+  await Promise.allSettled(processes.map((process) => client.closeWorkerProcess!(process.id)));
 }
 
 export function assignmentComment(
@@ -232,6 +260,36 @@ export function assignmentComment(
 ): string {
   const role = roleId ? `role=${roleId}; ` : "";
   return `Solist worker assignment: ${role}runtime=${runtime.id} (${runtime.name}); process=${process.id} (${process.name})`;
+}
+
+export function assignmentCommentForProcesses(
+  runtimes: readonly SoloWorkerRuntime[],
+  processes: readonly SoloWorkerProcess[],
+  roleId?: SolistRoleId
+): string {
+  if (runtimes.length === 1 && processes.length === 1) {
+    return assignmentComment(runtimes[0]!, processes[0]!, roleId);
+  }
+  const role = roleId ? `role=${roleId}; ` : "";
+  const assignments = runtimes.map((runtime, index) => {
+    const process = processes[index];
+    return process
+      ? `runtime=${runtime.id} (${runtime.name}); process=${process.id} (${process.name})`
+      : `runtime=${runtime.id} (${runtime.name}); process=unknown`;
+  }).join(" | ");
+  return `Solist worker assignment: ${role}${assignments}`;
+}
+
+function workerNameForRuntime(
+  baseName: string | undefined,
+  runtime: SoloWorkerRuntime,
+  count: number
+): string | undefined {
+  if (count <= 1) {
+    return baseName;
+  }
+  const suffix = runtime.id.replace(/[^a-zA-Z0-9_-]+/g, "-");
+  return `${baseName ?? "worker"}-${suffix}`;
 }
 
 function formatBullets(values: string[]): string[] {

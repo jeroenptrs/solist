@@ -24,20 +24,27 @@ import {
 	TUI,
 	CombinedAutocompleteProvider,
 	type Component,
-	type EditorTheme,
-	type MarkdownTheme,
 	type Terminal,
 } from "@earendil-works/pi-tui";
 import { SOLIST_MODEL_PROVIDER } from "../solistPrompt.js";
 import { getSolistAuthPath } from "../solistPaths.js";
 import {
-	bindingForAgentTool,
+	listSolistSessions,
+	readSolistSession,
+	stripSessionRoleOverrideContext,
+	updateSolistSession,
+	writeSolistSession,
+	type SolistSession,
+} from "../solistSessions.js";
+import {
+	bindingsForAgentTools,
+	formatRoleBindingSet,
 	getConfiguredSolistMode,
 	readSolistConfig,
-	resolveAgentToolSelection,
+	resolveAgentToolSelections,
 	resolveRoleBinding,
 	setSolistActiveMode,
-	setSolistRoleBinding,
+	setSolistRoleBindings,
 	unsetSolistRoleBinding,
 	writeSolistConfig,
 	type SolistRoleBindings,
@@ -54,7 +61,17 @@ import {
 	isSolistModeId,
 	type SolistModeId,
 } from "../solistModes.js";
-import { SOLIST_ROLE_IDS, SOLIST_ROLES, resolveSolistRoleId } from "../solistRoles.js";
+import {
+	SOLIST_ROLE_IDS,
+	SOLIST_ROLES,
+	resolveSolistRoleId,
+	type SolistRoleId,
+} from "../solistRoles.js";
+import {
+	createSolistAnsiTheme,
+	type SolistAnsiTheme,
+} from "./SolistTuiTheme.js";
+import { showMultiPicker, showSinglePicker, type SolistPickerItem } from "./SolistPicker.js";
 import {
 	isExactSolistInteractiveCommand,
 	routeSolistInteractiveInput,
@@ -67,6 +84,8 @@ export interface SolistInteractiveHarness {
 	readonly tools: readonly AgentTool[];
 	readonly modelRef: { provider: string; model: string };
 	readonly thinkingLevel: ThinkingLevel;
+	readonly modeId?: SolistModeId;
+	readonly projectId?: number | string;
 	readonly isStreaming: boolean;
 	readonly authPath?: string;
 	run(prompt: string): Promise<unknown>;
@@ -90,6 +109,10 @@ export interface SolistInteractiveModeOptions {
 		context: { messages: readonly AgentMessage[]; projectId?: number | string },
 	) => Promise<SolistInteractiveHarness>;
 	resolveProjectId?: (selector: string) => Promise<number | string | undefined>;
+	session?: SolistSession;
+	listSessions?: () => readonly SolistSession[];
+	readSession?: (id: string) => SolistSession | undefined;
+	writeSession?: (session: SolistSession) => void;
 }
 
 export class SolistInteractiveMode {
@@ -99,10 +122,14 @@ export class SolistInteractiveMode {
 	private readonly showWelcome: boolean;
 	private readonly createHarnessForMode?: SolistInteractiveModeOptions["createHarnessForMode"];
 	private readonly resolveProjectId: (selector: string) => Promise<number | string | undefined>;
+	private readonly listSessions: () => readonly SolistSession[];
+	private readonly readSession: (id: string) => SolistSession | undefined;
+	private readonly writeSession: (session: SolistSession) => void;
 	private readonly ui: TUI;
 	private readonly chat = new Container();
 	private readonly status = new Container();
 	private readonly editor: Editor;
+	private activeTheme: SolistAnsiTheme;
 	private unsubscribe?: () => void;
 	private resolveRun?: () => void;
 	private statusState = "Ready";
@@ -113,6 +140,7 @@ export class SolistInteractiveMode {
 	private activeAuth = false;
 	private activeAuthAbort?: AbortController;
 	private activeAuthInput?: AuthInputWaiter;
+	private session?: SolistSession;
 	private sessionRoleOverrides: SolistRoleBindings = {};
 	private currentAssistant?: {
 		text: string;
@@ -130,8 +158,13 @@ export class SolistInteractiveMode {
 		this.showWelcome = options.showWelcome ?? true;
 		this.createHarnessForMode = options.createHarnessForMode;
 		this.resolveProjectId = options.resolveProjectId ?? resolveDefaultProjectId;
+		this.session = options.session;
+		this.listSessions = options.listSessions ?? (() => listSolistSessions());
+		this.readSession = options.readSession ?? ((id) => readSolistSession(id));
+		this.writeSession = options.writeSession ?? ((session) => writeSolistSession(session));
 		this.ui = new TUI(this.terminal);
-		this.editor = new Editor(this.ui, defaultEditorTheme, { paddingX: 1 });
+		this.activeTheme = createSolistAnsiTheme(getSolistMode(this.harness.modeId));
+		this.editor = new Editor(this.ui, this.createEditorTheme(), { paddingX: 1 });
 	}
 
 	async run(initialPrompt = ""): Promise<void> {
@@ -174,14 +207,12 @@ export class SolistInteractiveMode {
 	private setupLayout(): void {
 		if (this.showWelcome) {
 			this.chat.addChild(new Spacer(1));
-			for (const line of getSolistAsciiArt()) {
-				this.chat.addChild(new Text(line, 1, 0));
-			}
-			this.chat.addChild(new Text(color.dim("   Solo orchestration agent"), 1, 0));
-			this.chat.addChild(
-				new Text(color.dim("   Type /help for commands, /exit to quit."), 1, 0),
-			);
+			this.chat.addChild(new SolistWelcomeBanner(() => this.activeTheme));
 			this.chat.addChild(new Spacer(1));
+		}
+
+		if (this.session && this.session.messages.length > 0) {
+			this.renderStoredMessages(this.session.messages);
 		}
 
 		this.editor.onSubmit = (input) => {
@@ -199,6 +230,19 @@ export class SolistInteractiveMode {
 		this.ui.addChild(this.status);
 		this.ui.setFocus(this.editor);
 		this.setStatusState("Ready");
+	}
+
+	private createEditorTheme() {
+		return {
+			borderColor: (text: string) => this.activeTheme.border(text),
+			selectList: {
+				selectedPrefix: (text: string) => this.activeTheme.selectList.selectedPrefix(text),
+				selectedText: (text: string) => this.activeTheme.selectList.selectedText(text),
+				description: (text: string) => this.activeTheme.selectList.description(text),
+				scrollInfo: (text: string) => this.activeTheme.selectList.scrollInfo(text),
+				noMatch: (text: string) => this.activeTheme.selectList.noMatch(text),
+			},
+		};
 	}
 
 	private async handleSubmit(input: string): Promise<void> {
@@ -234,8 +278,16 @@ export class SolistInteractiveMode {
 			await this.handleRolesCommand(route.action, route.project);
 			return;
 		}
+		if (route.kind === "role-menu") {
+			await this.handleRoleMenuCommand(route.project);
+			return;
+		}
 		if (route.kind === "role") {
 			await this.handleRoleCommand(route.action, route.role, route.agent, route.project);
+			return;
+		}
+		if (route.kind === "resume") {
+			await this.handleResumeCommand(route.session);
 			return;
 		}
 		if (route.kind === "login") {
@@ -286,6 +338,7 @@ export class SolistInteractiveMode {
 			this.activeTurn = false;
 			this.interruptRequested = false;
 			this.editor.disableSubmit = false;
+			this.saveSessionSnapshot();
 			this.setStatusState("Ready");
 			this.setAgentState("idle");
 			this.ui.setFocus(this.editor);
@@ -308,13 +361,43 @@ export class SolistInteractiveMode {
 		const config = readSolistConfig();
 		if (!modeArg) {
 			const mode = getSolistMode(getConfiguredSolistMode(config, projectId));
-			this.addSystemMessage(`Current ${formatScopeLabel(projectId)} mode: ${formatSolistMode(mode)}`);
+			const selected = await showSinglePicker(this.ui, this.activeTheme, {
+				title: `Select ${formatScopeLabel(projectId)} mode`,
+				subtitle: `Current: ${formatSolistMode(mode)}`,
+				selectedValue: mode.id,
+				items: SOLIST_MODE_IDS.map((modeId) => {
+					const candidate = getSolistMode(modeId);
+					const rolePolicy = candidate.canSpawnRoles ? "roles enabled" : "roles disabled";
+					return {
+						value: candidate.id,
+						label: candidate.label,
+						description: `${candidate.provider}/${candidate.model} reasoning=${candidate.thinkingLevel} ${rolePolicy}`,
+					};
+				}),
+			});
+			if (!selected) {
+				this.addSystemMessage(`Kept ${formatScopeLabel(projectId)} mode ${formatSolistMode(mode)}.`);
+				return;
+			}
+			await this.applyModeSelection(selected.value, projectId);
 			return;
 		}
 		if (!isSolistModeId(modeArg)) {
 			this.addSystemMessage(`Expected mode: ${SOLIST_MODE_IDS.join(", ")}.`);
 			return;
 		}
+		await this.applyModeSelection(modeArg, projectId);
+	}
+
+	private async applyModeSelection(
+		modeArg: string,
+		projectId?: number | string,
+	): Promise<void> {
+		if (!isSolistModeId(modeArg)) {
+			this.addSystemMessage(`Expected mode: ${SOLIST_MODE_IDS.join(", ")}.`);
+			return;
+		}
+		const config = readSolistConfig();
 		writeSolistConfig(setSolistActiveMode(config, modeArg, projectId));
 		if (!this.createHarnessForMode) {
 			this.addSystemMessage(
@@ -360,7 +443,7 @@ export class SolistInteractiveMode {
 						sessionOverrides: this.sessionRoleOverrides,
 					});
 					if (resolution.status === "selected") {
-						lines.push(`  ${roleId}: ok -> ${resolution.agentTool.id} (${resolution.agentTool.name}) [${resolution.source}]`);
+						lines.push(`  ${roleId}: ok -> ${resolution.agentTools.map((agentTool) => `${agentTool.id} (${agentTool.name})`).join(", ")} [${resolution.source}]`);
 					} else {
 						lines.push(`  ${roleId}: missing -> ${resolution.reason}`);
 					}
@@ -373,24 +456,18 @@ export class SolistInteractiveMode {
 			}
 			return;
 		}
-		const lines = [
-			`Solist orchestration roles (${formatScopeLabel(projectId)} effective bindings):`,
-			...SOLIST_ROLE_IDS.map((roleId) => {
-				const projectBinding = projectId === undefined
-					? undefined
-					: config.projectOverrides[String(projectId)]?.roleBindings?.[roleId];
-				const globalBinding = config.roleBindings[roleId];
-				const binding = projectBinding ?? globalBinding;
-				const override = this.sessionRoleOverrides[roleId];
-				const suffix = override
-					? ` session override -> ${formatRoleBinding(override)}`
-					: binding
-						? ` -> ${formatRoleBinding(binding)} [${projectBinding ? "project" : "global"}]`
-						: "";
-				return `  ${roleId}: ${SOLIST_ROLES[roleId].description}${suffix}`;
-			}),
-		];
-		this.addSystemMessage(lines.join("\n"));
+		await this.showRoleManager(projectId);
+	}
+
+	private async handleRoleMenuCommand(projectSelector?: string): Promise<void> {
+		let projectId: number | string | undefined;
+		try {
+			projectId = await this.resolveProjectSelector(projectSelector);
+		} catch (error) {
+			this.addSystemMessage(error instanceof Error ? error.message : String(error));
+			return;
+		}
+		await this.showRoleActionFlow(projectId);
 	}
 
 	private async handleRoleCommand(
@@ -403,17 +480,20 @@ export class SolistInteractiveMode {
 			this.addSystemMessage("Wait for the current turn or authentication flow to finish before changing role bindings.");
 			return;
 		}
-		const roleId = roleSelection ? resolveSolistRoleId(roleSelection) : undefined;
-		if (!roleId) {
-			this.addSystemMessage("Unknown role. Use /roles to list available role ids.");
-			return;
-		}
 		let projectId: number | string | undefined;
 		try {
 			projectId = await this.resolveProjectSelector(projectSelector);
 		} catch (error) {
 			this.addSystemMessage(error instanceof Error ? error.message : String(error));
 			return;
+		}
+		let roleId = roleSelection ? resolveSolistRoleId(roleSelection) : undefined;
+		if (!roleId) {
+			roleId = await this.pickRole(projectId, `Select role for /role ${action}`);
+			if (!roleId) {
+				this.addSystemMessage("Role command cancelled.");
+				return;
+			}
 		}
 
 		if (action === "unset") {
@@ -426,33 +506,297 @@ export class SolistInteractiveMode {
 		}
 
 		if (!agentSelection) {
-			this.addSystemMessage(`Usage: /role ${action} <role> <agent id or exact name>`);
+			const agentTools = await this.pickAgentTools(roleId, action, projectId);
+			if (!agentTools) {
+				this.addSystemMessage("Role command cancelled.");
+				return;
+			}
+			if (agentTools.length === 0) {
+				this.addSystemMessage("No Solo agents selected. Use /role unset to clear a role mapping.");
+				return;
+			}
+			await this.applyRoleAgentSelection(action, roleId, agentTools, projectId);
 			return;
 		}
 
 		try {
 			const agentTools = await listSoloAgentTools();
-			const agentTool = resolveAgentToolSelection(agentSelection, agentTools);
-			if (!agentTool) {
+			const selectedAgentTools = resolveAgentToolSelections(agentSelection, agentTools);
+			if (selectedAgentTools.length === 0) {
 				this.addSystemMessage(
 					`No enabled Solo agent tool matched "${agentSelection}". Available: ${formatAgentToolChoices(agentTools)}.`,
 				);
 				return;
 			}
-			const binding = bindingForAgentTool(agentTool);
-			if (action === "override" || action === "switch") {
-				this.sessionRoleOverrides = { ...this.sessionRoleOverrides, [roleId]: binding };
-				this.addSystemMessage(`Session role switch: role ${roleId} maps to Solo agent ${agentTool.id} (${agentTool.name}).`);
-				return;
-			}
-			const config = readSolistConfig();
-			writeSolistConfig(setSolistRoleBinding(config, roleId, binding, projectId));
-			this.addSystemMessage(`${formatScopeLabel(projectId)} role ${roleId} now maps to Solo agent ${agentTool.id} (${agentTool.name}).`);
+			await this.applyRoleAgentSelection(action, roleId, selectedAgentTools, projectId);
 		} catch (error) {
 			this.addSystemMessage(
 				`Role command failed: ${error instanceof Error ? error.message : String(error)}`,
 			);
 		}
+	}
+
+	private async showRoleManager(projectId?: number | string): Promise<void> {
+		const roleId = await this.pickRole(projectId, `Solist roles (${formatScopeLabel(projectId)})`);
+		if (!roleId) {
+			this.addSystemMessage("Role manager closed.");
+			return;
+		}
+		await this.showRoleActionFlow(projectId, roleId);
+	}
+
+	private async showRoleActionFlow(
+		projectId?: number | string,
+		roleId?: SolistRoleId,
+	): Promise<void> {
+		const selectedRoleId = roleId ?? await this.pickRole(projectId, "Select a Solist role");
+		if (!selectedRoleId) {
+			this.addSystemMessage("Role command cancelled.");
+			return;
+		}
+		const actionItem = await showSinglePicker(this.ui, this.activeTheme, {
+			title: `Manage ${selectedRoleId}`,
+			subtitle: SOLIST_ROLES[selectedRoleId].description,
+			selectedValue: "set",
+			items: [
+				{ value: "set", label: "Persist mapping", description: `Save ${formatScopeLabel(projectId)} role agents` },
+				{ value: "switch", label: "Session switch", description: "Use selected agents for this Solist process only" },
+				{ value: "override", label: "Session override", description: "Alias for a session-only role switch" },
+				{ value: "unset", label: "Clear mapping", description: `Remove ${formatScopeLabel(projectId)} mapping and session override` },
+			],
+		});
+		if (!actionItem) {
+			this.addSystemMessage("Role command cancelled.");
+			return;
+		}
+		const action = actionItem.value as "set" | "unset" | "override" | "switch";
+		if (action === "unset") {
+			const config = readSolistConfig();
+			writeSolistConfig(unsetSolistRoleBinding(config, selectedRoleId, projectId));
+			const { [selectedRoleId]: _removed, ...rest } = this.sessionRoleOverrides;
+			this.sessionRoleOverrides = rest;
+			this.addSystemMessage(`${formatScopeLabel(projectId)} role ${selectedRoleId} binding removed.`);
+			return;
+		}
+		const agentTools = await this.pickAgentTools(selectedRoleId, action, projectId);
+		if (!agentTools) {
+			this.addSystemMessage("Role command cancelled.");
+			return;
+		}
+		if (agentTools.length === 0) {
+			this.addSystemMessage("No Solo agents selected. Use clear mapping to remove a role mapping.");
+			return;
+		}
+		await this.applyRoleAgentSelection(action, selectedRoleId, agentTools, projectId);
+	}
+
+	private async pickRole(
+		projectId: number | string | undefined,
+		title: string,
+	): Promise<SolistRoleId | undefined> {
+		const config = readSolistConfig();
+		const selected = await showSinglePicker(this.ui, this.activeTheme, {
+			title,
+			subtitle: "Arrow keys select a role.",
+			items: SOLIST_ROLE_IDS.map((roleId) => {
+				const projectBinding = projectId === undefined
+					? undefined
+					: config.projectOverrides[String(projectId)]?.roleBindings?.[roleId];
+				const globalBinding = config.roleBindings[roleId];
+				const override = this.sessionRoleOverrides[roleId];
+				const binding = override ?? projectBinding ?? globalBinding;
+				const source = override
+					? "session"
+					: projectBinding
+						? "project"
+						: globalBinding
+							? "global"
+							: "unconfigured";
+				return {
+					value: roleId,
+					label: SOLIST_ROLES[roleId].label,
+					description: `${source}: ${formatRoleBindingSet(binding)}`,
+				};
+			}),
+		});
+		return selected ? resolveSolistRoleId(selected.value) : undefined;
+	}
+
+	private async pickAgentTools(
+		roleId: SolistRoleId,
+		action: "set" | "override" | "switch",
+		projectId?: number | string,
+	): Promise<Array<{ id: number; name: string; enabled?: boolean }> | undefined> {
+		try {
+			const agentTools = await listSoloAgentTools();
+			const selectedValues = this.getSelectedAgentToolValues(roleId, agentTools, projectId, action);
+			const selected = await showMultiPicker(this.ui, this.activeTheme, {
+				title: `Select Solo agents for ${roleId}`,
+				subtitle: `${action === "set" ? "Persisted" : "Session-only"} mapping. Multiple agents can be selected.`,
+				selectedValues,
+				items: agentTools.map((agentTool): SolistPickerItem => ({
+					value: String(agentTool.id),
+					label: `${agentTool.id} ${agentTool.name}`,
+					description: agentTool.enabled === false ? "disabled" : "enabled",
+					disabled: agentTool.enabled === false,
+				})),
+				emptyText: "No Solo agent tools are configured.",
+			});
+			if (!selected) {
+				return undefined;
+			}
+			return selected.flatMap((item) => {
+				const id = Number(item.value);
+				const tool = agentTools.find((agentTool) => agentTool.id === id);
+				return tool ? [tool] : [];
+			});
+		} catch (error) {
+			this.addSystemMessage(
+				`Role picker failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			return undefined;
+		}
+	}
+
+	private getSelectedAgentToolValues(
+		roleId: SolistRoleId,
+		agentTools: ReadonlyArray<{ id: number; name: string; enabled?: boolean }>,
+		projectId: number | string | undefined,
+		action: "set" | "override" | "switch",
+	): string[] {
+		const config = readSolistConfig();
+		const resolution = resolveRoleBinding({
+			roleId,
+			config,
+			availableAgentTools: agentTools,
+			projectId,
+			sessionOverrides: action === "set" ? undefined : this.sessionRoleOverrides,
+		});
+		return resolution.status === "selected"
+			? resolution.agentTools.map((agentTool) => String(agentTool.id))
+			: [];
+	}
+
+	private async applyRoleAgentSelection(
+		action: "set" | "override" | "switch",
+		roleId: SolistRoleId,
+		agentTools: ReadonlyArray<{ id: number; name: string; enabled?: boolean }>,
+		projectId?: number | string,
+	): Promise<void> {
+		const enabledAgentTools = agentTools.filter((agentTool) => agentTool.enabled !== false);
+		const bindings = bindingsForAgentTools(enabledAgentTools);
+		const bindingSet = { agents: bindings };
+		if (action === "override" || action === "switch") {
+			this.sessionRoleOverrides = { ...this.sessionRoleOverrides, [roleId]: bindingSet };
+			this.addSystemMessage(`Session role switch: role ${roleId} maps to Solo agents ${formatAgentTools(enabledAgentTools)}.`);
+			return;
+		}
+		const config = readSolistConfig();
+		writeSolistConfig(setSolistRoleBindings(config, roleId, bindings, projectId));
+		this.addSystemMessage(`${formatScopeLabel(projectId)} role ${roleId} now maps to Solo agents ${formatAgentTools(enabledAgentTools)}.`);
+	}
+
+	private async handleResumeCommand(sessionSelection?: string): Promise<void> {
+		if (this.activeTurn || this.activeAuth) {
+			this.addSystemMessage("Wait for the current turn or authentication flow to finish before resuming another conversation.");
+			return;
+		}
+		if (!this.createHarnessForMode) {
+			this.addSystemMessage("This Solist harness cannot rebuild itself for resumed conversations.");
+			return;
+		}
+
+		let session: SolistSession | undefined;
+		try {
+			session = sessionSelection && sessionSelection !== "latest"
+				? this.readSession(sessionSelection)
+				: undefined;
+			if (sessionSelection === "latest") {
+				session = this.listResumeSessions()[0];
+			}
+			if (!sessionSelection) {
+				session = await this.pickSession();
+			}
+		} catch (error) {
+			this.addSystemMessage(`Session read failed: ${error instanceof Error ? error.message : String(error)}`);
+			return;
+		}
+		if (!session) {
+			this.addSystemMessage(sessionSelection
+				? `No Solist session found for "${sessionSelection}".`
+				: "Resume cancelled.");
+			return;
+		}
+		if (this.session?.id !== session.id && this.harness.messages.length > 0) {
+			const confirmed = await this.confirmResumeReplace(session);
+			if (!confirmed) {
+				this.addSystemMessage("Resume cancelled.");
+				return;
+			}
+		}
+		await this.resumeSession(session);
+	}
+
+	private async pickSession(): Promise<SolistSession | undefined> {
+		const sessions = this.listResumeSessions();
+		if (sessions.length === 0) {
+			return undefined;
+		}
+		const selected = await showSinglePicker(this.ui, this.activeTheme, {
+			title: "Resume Solist conversation",
+			subtitle: "Recent sessions from ~/.solist/sessions.",
+			selectedValue: this.session?.id,
+			items: sessions.map((session) => ({
+				value: session.id,
+				label: session.title,
+				description: `${session.updatedAt} mode=${session.modeId} messages=${session.messages.length}`,
+			})),
+		});
+		if (!selected) {
+			return undefined;
+		}
+		return this.readSession(selected.value);
+	}
+
+	private listResumeSessions(): readonly SolistSession[] {
+		const currentId = this.session?.id;
+		return this.listSessions().filter((session) => session.id !== currentId);
+	}
+
+	private async confirmResumeReplace(session: SolistSession): Promise<boolean> {
+		const selected = await showSinglePicker(this.ui, this.activeTheme, {
+			title: "Replace current conversation?",
+			subtitle: `Resume "${session.title}" with ${session.messages.length} stored messages.`,
+			selectedValue: "resume",
+			items: [
+				{ value: "resume", label: "Resume selected", description: "Replace the visible and model conversation context" },
+				{ value: "cancel", label: "Cancel", description: "Keep the current conversation" },
+			],
+			maxVisible: 2,
+		});
+		return selected?.value === "resume";
+	}
+
+	private async resumeSession(session: SolistSession): Promise<void> {
+		const previousHarness = this.harness;
+		const previousUnsubscribe = this.unsubscribe;
+		const nextHarness = await this.createHarnessForMode!(session.modeId, {
+			messages: [...session.messages],
+			projectId: session.projectId,
+		});
+		previousUnsubscribe?.();
+		this.harness = nextHarness;
+		this.activeTheme = createSolistAnsiTheme(getSolistMode(nextHarness.modeId ?? session.modeId));
+		this.editor.borderColor = this.activeTheme.border;
+		this.unsubscribe = nextHarness.subscribe((event) => this.renderEvent(event));
+		await previousHarness.close?.();
+		this.session = session;
+		this.chat.clear();
+		this.renderStoredMessages(session.messages);
+		this.addSystemMessage(`Resumed Solist session ${session.id}: ${session.title}`);
+		this.setStatusState("Ready");
+		this.setAgentState("idle");
+		this.ui.requestRender(true);
 	}
 
 	private async switchHarnessMode(modeId: SolistModeId, projectId?: number | string): Promise<void> {
@@ -465,8 +809,11 @@ export class SolistInteractiveMode {
 		});
 		previousUnsubscribe?.();
 		this.harness = nextHarness;
+		this.activeTheme = createSolistAnsiTheme(getSolistMode(nextHarness.modeId ?? modeId));
+		this.editor.borderColor = this.activeTheme.border;
 		this.unsubscribe = nextHarness.subscribe((event) => this.renderEvent(event));
 		await previousHarness.close?.();
+		this.saveSessionSnapshot();
 		this.setStatusState("Ready");
 		this.setAgentState("idle");
 		this.ui.requestRender();
@@ -485,7 +832,7 @@ export class SolistInteractiveMode {
 
 	private withSessionRoleOverrides(prompt: string): string {
 		const lines = Object.entries(this.sessionRoleOverrides).map(([roleId, binding]) =>
-			`- ${roleId} -> ${formatRoleBinding(binding)}`);
+			`- ${roleId} -> ${formatRoleBindingSet(binding)}`);
 		if (lines.length === 0) {
 			return prompt;
 		}
@@ -744,14 +1091,14 @@ export class SolistInteractiveMode {
 	private renderMessageStart(message: AgentMessage): void {
 		if (message.role === "user") {
 			this.chat.addChild(new Spacer(1));
-			this.chat.addChild(createUserMessage(extractMessageText(message)));
+			this.chat.addChild(createUserMessage(stripSessionRoleOverrideContext(extractMessageText(message)), this.activeTheme));
 			return;
 		}
 
 		if (message.role === "assistant") {
 			this.chat.addChild(new Spacer(1));
-			const placeholder = createThinkingPlaceholder(this.ui);
-			const component = new Markdown("", 1, 0, defaultMarkdownTheme);
+			const placeholder = createThinkingPlaceholder(this.ui, this.activeTheme);
+			const component = new Markdown("", 1, 0, this.activeTheme.markdown);
 			this.chat.addChild(placeholder);
 			this.chat.addChild(component);
 			this.currentAssistant = { text: "", component, placeholder };
@@ -782,7 +1129,7 @@ export class SolistInteractiveMode {
 		if (event.type === "text_delta") {
 			if (!this.currentAssistant) {
 				this.chat.addChild(new Spacer(1));
-				const component = new Markdown("", 1, 0, defaultMarkdownTheme);
+				const component = new Markdown("", 1, 0, this.activeTheme.markdown);
 				this.chat.addChild(component);
 				this.currentAssistant = { text: "", component };
 			}
@@ -810,15 +1157,52 @@ export class SolistInteractiveMode {
 
 	private addSystemMessage(message: string): void {
 		this.chat.addChild(new Spacer(1));
-		this.chat.addChild(new Markdown(message, 1, 0, defaultMarkdownTheme));
+		this.chat.addChild(new Markdown(message, 1, 0, this.activeTheme.markdown));
 		this.updateStatusLine();
 		this.ui.requestRender();
 	}
 
 	private addToolMessage(message: string): void {
-		this.chat.addChild(new Text(`[tool] ${message}`, 1, 0));
+		this.chat.addChild(new Text(this.activeTheme.muted(`[tool] ${message}`), 1, 0));
 		this.updateStatusLine();
 		this.ui.requestRender();
+	}
+
+	private renderStoredMessages(messages: readonly AgentMessage[]): void {
+		for (const message of messages) {
+			const text = message.role === "user"
+				? stripSessionRoleOverrideContext(extractMessageText(message))
+				: extractMessageText(message);
+			if (!text) {
+				continue;
+			}
+			this.chat.addChild(new Spacer(1));
+			if (message.role === "user") {
+				this.chat.addChild(createUserMessage(text, this.activeTheme));
+			} else if (message.role === "assistant") {
+				this.chat.addChild(new Markdown(text, 1, 0, this.activeTheme.markdown));
+			} else {
+				this.chat.addChild(new Text(this.activeTheme.muted(`[${message.role}] ${text}`), 1, 0));
+			}
+		}
+	}
+
+	private saveSessionSnapshot(): void {
+		if (!this.session) {
+			return;
+		}
+		this.session = updateSolistSession(this.session, {
+			messages: [...this.harness.messages],
+			modeId: getSolistMode(this.harness.modeId).id,
+			projectId: this.harness.projectId ?? this.session.projectId,
+		});
+		try {
+			this.writeSession(this.session);
+		} catch (error) {
+			this.addSystemMessage(
+				`Session save failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
 	}
 
 	private setStatusState(state: string): void {
@@ -833,8 +1217,8 @@ export class SolistInteractiveMode {
 
 	private ensureAssistantPlaceholder(): void {
 		if (!this.currentAssistant) {
-			const placeholder = createThinkingPlaceholder(this.ui);
-			const component = new Markdown("", 1, 0, defaultMarkdownTheme);
+			const placeholder = createThinkingPlaceholder(this.ui, this.activeTheme);
+			const component = new Markdown("", 1, 0, this.activeTheme.markdown);
 			this.chat.addChild(new Spacer(1));
 			this.chat.addChild(placeholder);
 			this.chat.addChild(component);
@@ -842,7 +1226,7 @@ export class SolistInteractiveMode {
 			return;
 		}
 		if (!this.currentAssistant.placeholder && !this.currentAssistant.text) {
-			const placeholder = createThinkingPlaceholder(this.ui);
+			const placeholder = createThinkingPlaceholder(this.ui, this.activeTheme);
 			this.chat.removeChild(this.currentAssistant.component);
 			this.chat.addChild(placeholder);
 			this.chat.addChild(this.currentAssistant.component);
@@ -867,18 +1251,18 @@ export class SolistInteractiveMode {
 	private updateStatusLine(): void {
 		const model = `${this.harness.modelRef.provider}/${this.harness.modelRef.model}`;
 		const solo = this.soloMcpAvailable
-			? color.success("solo:ok")
-			: color.error("solo:down");
+			? this.activeTheme.success("solo:ok")
+			: this.activeTheme.error("solo:down");
 		const cwdName = basename(this.cwd) || this.cwd;
 		const line = [
-			colorStatusState(this.statusState),
-			colorAgentState(this.agentState),
-			color.accent(model),
-			color.dim(`reasoning:${this.harness.thinkingLevel}`),
-			color.dim(`messages:${this.harness.messages.length}`),
-			color.dim(`tools:${this.harness.tools.length}`),
+			colorStatusState(this.statusState, this.activeTheme),
+			colorAgentState(this.agentState, this.activeTheme),
+			this.activeTheme.accent(model),
+			this.activeTheme.reasoning(`reasoning:${this.harness.thinkingLevel}`),
+			this.activeTheme.dim(`messages:${this.harness.messages.length}`),
+			this.activeTheme.dim(`tools:${this.harness.tools.length}`),
 			solo,
-			color.dim(`cwd:${cwdName}`),
+			this.activeTheme.dim(`cwd:${cwdName}`),
 		].join(" | ");
 		this.status.clear();
 		this.status.addChild(new TruncatedText(line, 1, 0));
@@ -902,6 +1286,7 @@ export class SolistInteractiveMode {
 		if (this.stopped) return;
 		this.stopped = true;
 		this.clearCurrentAssistant();
+		this.saveSessionSnapshot();
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
 		this.editor.disableSubmit = true;
@@ -934,12 +1319,12 @@ function extractMessageText(message: AgentMessage): string {
 	return "";
 }
 
-function createUserMessage(text: string): Component {
-	return new Text(text, 1, 1, color.userBackground);
+function createUserMessage(text: string, theme: SolistAnsiTheme): Component {
+	return new Text(text, 1, 1, theme.userBackground);
 }
 
-function createThinkingPlaceholder(ui: TUI): Loader {
-	const placeholder = new Loader(ui, color.accent, color.dim, "Thinking...");
+function createThinkingPlaceholder(ui: TUI, theme: SolistAnsiTheme): Loader {
+	const placeholder = new Loader(ui, theme.accent, theme.dim, "Thinking...");
 	placeholder.start();
 	return placeholder;
 }
@@ -958,10 +1343,6 @@ function safeJson(value: unknown): string {
 	}
 }
 
-const identity = (text: string) => text;
-
-const ANSI_RESET = "\x1b[0m";
-
 type AgentActivityState =
 	| "idle"
 	| "thinking"
@@ -973,46 +1354,44 @@ interface AuthInputWaiter {
 	reject(error: Error): void;
 }
 
-const color = {
-	accent: (text: string) => `\x1b[36m${text}${ANSI_RESET}`,
-	dim: (text: string) => `\x1b[2m${text}${ANSI_RESET}`,
-	error: (text: string) => `\x1b[31m${text}${ANSI_RESET}`,
-	success: (text: string) => `\x1b[32m${text}${ANSI_RESET}`,
-	userBackground: (text: string) => `\x1b[48;5;238m${text}${ANSI_RESET}`,
-	warning: (text: string) => `\x1b[33m${text}${ANSI_RESET}`,
-};
+class SolistWelcomeBanner implements Component {
+	constructor(private readonly getTheme: () => SolistAnsiTheme) {}
 
-function colorStatusState(state: string): string {
-	if (state === "Ready") return color.success("Solist Ready");
-	if (state === "Working") return color.accent("Solist Working");
-	if (state.startsWith("Running ")) return color.warning(`Solist ${state}`);
-	return color.dim(`Solist ${state}`);
+	invalidate(): void {}
+
+	render(_width: number): string[] {
+		const theme = this.getTheme();
+		return [
+			...getSolistAsciiArt(theme),
+			theme.dim("   Solo orchestration agent"),
+			theme.dim("   Type /help for commands, /exit to quit."),
+		];
+	}
 }
 
-function colorAgentState(state: AgentActivityState): string {
+function colorStatusState(state: string, theme: SolistAnsiTheme): string {
+	if (state === "Ready") return theme.success("Solist Ready");
+	if (state === "Working") return theme.accent("Solist Working");
+	if (state.startsWith("Running ")) return theme.warning(`Solist ${state}`);
+	return theme.dim(`Solist ${state}`);
+}
+
+function colorAgentState(state: AgentActivityState, theme: SolistAnsiTheme): string {
 	const text = `agent:${state}`;
-	if (state === "idle") return color.dim(text);
-	if (state === "thinking") return color.warning(text);
-	if (state === "streaming") return color.accent(text);
-	return color.warning(text);
-}
-
-function formatRoleBinding(binding: {
-	readonly agentToolId?: number;
-	readonly agentToolName?: string;
-	readonly lastKnownName?: string;
-}): string {
-	if (binding.agentToolId !== undefined && binding.lastKnownName) {
-		return `${binding.agentToolId} (${binding.lastKnownName})`;
-	}
-	if (binding.agentToolId !== undefined) {
-		return String(binding.agentToolId);
-	}
-	return binding.agentToolName ?? binding.lastKnownName ?? "unconfigured";
+	if (state === "idle") return theme.dim(text);
+	if (state === "thinking") return theme.warning(text);
+	if (state === "streaming") return theme.accent(text);
+	return theme.warning(text);
 }
 
 function formatScopeLabel(projectId?: number | string): string {
 	return projectId === undefined ? "global" : `project ${projectId}`;
+}
+
+function formatAgentTools(
+	agentTools: ReadonlyArray<{ id: number; name: string }>,
+): string {
+	return agentTools.map((agentTool) => `${agentTool.id} (${agentTool.name})`).join(", ");
 }
 
 async function resolveDefaultProjectId(selector: string): Promise<number | string | undefined> {
@@ -1023,43 +1402,15 @@ async function resolveDefaultProjectId(selector: string): Promise<number | strin
 	return Number.isInteger(numeric) && numeric > 0 ? numeric : selector;
 }
 
-function getSolistAsciiArt(): readonly string[] {
+function getSolistAsciiArt(theme: SolistAnsiTheme): readonly string[] {
 	return [
-		color.accent("  ____        _ _     _"),
-		color.accent(" / ___|  ___ | (_)___| |_"),
-		color.accent(" \\___ \\ / _ \\| | / __| __|"),
-		color.accent("  ___) | (_) | | \\__ \\ |_"),
-		color.accent(" |____/ \\___/|_|_|___/\\__|"),
+		theme.accent("  ____        _ _     _"),
+		theme.accent(" / ___|  ___ | (_)___| |_"),
+		theme.accent(" \\___ \\ / _ \\| | / __| __|"),
+		theme.accent("  ___) | (_) | | \\__ \\ |_"),
+		theme.accent(" |____/ \\___/|_|_|___/\\__|"),
 	];
 }
-
-const defaultEditorTheme: EditorTheme = {
-	borderColor: identity,
-	selectList: {
-		selectedPrefix: identity,
-		selectedText: (text: string) => text,
-		description: identity,
-		scrollInfo: identity,
-		noMatch: identity,
-	},
-};
-
-const defaultMarkdownTheme: MarkdownTheme = {
-	heading: identity,
-	link: identity,
-	linkUrl: identity,
-	code: identity,
-	codeBlock: identity,
-	codeBlockBorder: identity,
-	quote: identity,
-	quoteBorder: identity,
-	hr: identity,
-	listBullet: identity,
-	bold: identity,
-	italic: identity,
-	strikethrough: identity,
-	underline: identity,
-};
 
 function openBrowser(url: string): void {
 	const command = process.platform === "darwin"

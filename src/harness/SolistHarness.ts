@@ -15,6 +15,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { buildSolistSystemPrompt } from "../solistPrompt.js";
 import { getSolistAuthPath } from "../solistPaths.js";
+import type { SolistModeId } from "../solistModes.js";
 import {
 	createSolistApiKeyResolver,
 	getSolistOAuthProviderName,
@@ -43,6 +44,8 @@ export interface SolistHarnessOptions {
 	getApiKey?: SolistApiKeyResolver;
 	output?: SolistHarnessOutput;
 	messages?: AgentMessage[];
+	modeId?: SolistModeId;
+	projectId?: number | string;
 }
 
 export interface SolistHarnessRunResult {
@@ -53,12 +56,16 @@ export class SolistHarness {
 	private readonly agent: Agent;
 	private readonly output: SolistHarnessOutput;
 	private readonly disposables: Array<() => void | Promise<void>>;
+	private readonly configuredModeId?: SolistModeId;
+	private readonly configuredProjectId?: number | string;
 	private finalMessages: AgentMessage[] = [];
 	private closePromise?: Promise<void>;
 
 	constructor(options: SolistHarnessOptions = {}) {
 		this.output = options.output ?? process.stdout;
 		this.disposables = options.disposables ?? [];
+		this.configuredModeId = options.modeId;
+		this.configuredProjectId = options.projectId;
 
 		this.agent = new Agent({
 			initialState: {
@@ -93,6 +100,14 @@ export class SolistHarness {
 
 	get thinkingLevel(): ThinkingLevel {
 		return this.agent.state.thinkingLevel;
+	}
+
+	get modeId(): SolistModeId | undefined {
+		return this.configuredModeId;
+	}
+
+	get projectId(): number | string | undefined {
+		return this.configuredProjectId;
 	}
 
 	get authPath(): string {

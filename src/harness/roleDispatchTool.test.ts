@@ -1,10 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { defaultSolistConfig, setSolistRoleBinding } from "../solistConfig.js";
+import { defaultSolistConfig, setSolistRoleBinding, setSolistRoleBindings } from "../solistConfig.js";
 import type { SoloMcpClient, SoloMcpToolCallResult } from "../soloMcpDirect.js";
 import { createSolistRoleDispatchTool } from "./roleDispatchTool.js";
 
 class FakeSoloMcpClient implements SoloMcpClient {
 	readonly calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+	private spawnCount = 0;
+
+	constructor(
+		private readonly agentTools = [{ id: 7, name: "Codex High", enabled: true }],
+		private readonly failSpawnAt?: number,
+	) {}
 
 	async listTools() {
 		return [];
@@ -13,12 +19,16 @@ class FakeSoloMcpClient implements SoloMcpClient {
 	async callTool(name: string, args: Record<string, unknown>): Promise<SoloMcpToolCallResult> {
 		this.calls.push({ name, args });
 		if (name === "list_agent_tools") {
-			return json([{ id: 7, name: "Codex High", enabled: true }]);
+			return json(this.agentTools);
 		}
 		if (name === "spawn_process") {
-			return json({ process_id: 44, name: "review-worker" });
+			this.spawnCount += 1;
+			if (this.failSpawnAt === this.spawnCount) {
+				throw new Error(`spawn failed at ${this.spawnCount}`);
+			}
+			return json({ process_id: 43 + this.spawnCount, name: `review-worker-${this.spawnCount}` });
 		}
-		if (name === "send_input" || name === "todo_comment_create") {
+		if (name === "send_input" || name === "todo_comment_create" || name === "close_process") {
 			return json({ ok: true, todo_id: args.todo_id });
 		}
 		throw new Error(`Unexpected tool ${name}`);
@@ -68,6 +78,62 @@ describe("createSolistRoleDispatchTool", () => {
 			todo_id: 123,
 			body: expect.stringContaining("role=reviewer"),
 		});
+	});
+
+	it("spawns every Solo agent mapped to a role", async () => {
+		const client = new FakeSoloMcpClient([
+			{ id: 7, name: "Codex High", enabled: true },
+			{ id: 9, name: "Gemini", enabled: true },
+		]);
+		const config = setSolistRoleBindings(defaultSolistConfig(), "reviewer", [
+			{ agentToolId: 7, lastKnownName: "Codex High" },
+			{ agentToolId: 9, lastKnownName: "Gemini" },
+		]);
+		const tool = createSolistRoleDispatchTool(client, {
+			configReader: () => config,
+			projectId: 11,
+		});
+
+		const result = await tool.execute("call-1", {
+			role_id: "reviewer",
+			objective: "Review the patch for regressions",
+			scratchpad_uri: "solo://proj/11/scratchpad/plan--1",
+			todo_id: 123,
+			todo_title: "Review patch",
+			worker_name: "reviewer",
+		});
+
+		expect(firstText(result)).toContain("Agent tools: 7 (Codex High), 9 (Gemini)");
+		expect(client.calls.filter((call) => call.name === "spawn_process").map((call) => call.args.agent_tool_id)).toEqual([7, 9]);
+		expect(client.calls.filter((call) => call.name === "send_input")).toHaveLength(2);
+		expect(client.calls.at(-1)?.args.body).toEqual(expect.stringContaining("runtime=9 (Gemini)"));
+	});
+
+	it("closes already spawned role processes when a later runtime spawn fails", async () => {
+		const client = new FakeSoloMcpClient([
+			{ id: 7, name: "Codex High", enabled: true },
+			{ id: 9, name: "Gemini", enabled: true },
+		], 2);
+		const config = setSolistRoleBindings(defaultSolistConfig(), "reviewer", [
+			{ agentToolId: 7, lastKnownName: "Codex High" },
+			{ agentToolId: 9, lastKnownName: "Gemini" },
+		]);
+		const tool = createSolistRoleDispatchTool(client, {
+			configReader: () => config,
+			projectId: 11,
+		});
+
+		await expect(tool.execute("call-1", {
+			role_id: "reviewer",
+			objective: "Review the patch for regressions",
+			scratchpad_uri: "solo://proj/11/scratchpad/plan--1",
+			todo_id: 123,
+			todo_title: "Review patch",
+			worker_name: "reviewer",
+		})).rejects.toThrow("spawn failed at 2");
+
+		expect(client.calls.filter((call) => call.name === "close_process").map((call) => call.args.process_id)).toEqual([44]);
+		expect(client.calls.some((call) => call.name === "todo_comment_create")).toBe(false);
 	});
 
 	it("returns decision-needed when the role has no configured Solo agent", async () => {

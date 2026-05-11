@@ -54,6 +54,7 @@ describe("SolistCommandRouter", () => {
 			expect.objectContaining({ name: "roles", description: expect.any(String) }),
 			expect.objectContaining({ name: "role", description: expect.any(String) }),
 			expect.objectContaining({ name: "role-switch", description: expect.any(String) }),
+			expect.objectContaining({ name: "resume", description: expect.any(String) }),
 			expect.objectContaining({ name: "login", description: expect.any(String) }),
 			expect.objectContaining({ name: "logout", description: expect.any(String) }),
 		]);
@@ -71,12 +72,14 @@ describe("SolistCommandRouter", () => {
 		expect(isExactSolistInteractiveCommand("/mode")).toBe(true);
 		expect(isExactSolistInteractiveCommand("/roles")).toBe(true);
 		expect(isExactSolistInteractiveCommand("/role-switch")).toBe(true);
+		expect(isExactSolistInteractiveCommand("/resume")).toBe(true);
 		expect(isExactSolistInteractiveCommand("/login")).toBe(true);
 		expect(isExactSolistInteractiveCommand("/logout")).toBe(true);
 		expect(isExactSolistInteractiveCommand("/sta")).toBe(false);
 		expect(isExactSolistInteractiveCommand("/status now")).toBe(false);
 		expect(isExactSolistInteractiveCommand("/role set reviewer Gemini")).toBe(false);
 		expect(isExactSolistInteractiveCommand("/role-switch reviewer Gemini")).toBe(false);
+		expect(isExactSolistInteractiveCommand("/resume latest")).toBe(false);
 		expect(isExactSolistInteractiveCommand("/login openai-codex")).toBe(false);
 		expect(isExactSolistInteractiveCommand("/model")).toBe(false);
 	});
@@ -151,6 +154,17 @@ describe("SolistCommandRouter", () => {
 		expect(routeSolistInteractiveInput("/logout openai-codex", context)).toEqual({
 			kind: "logout",
 			provider: "openai-codex",
+		});
+	});
+
+	it("routes Solist-owned resume commands", () => {
+		expect(routeSolistInteractiveInput("/resume", context)).toEqual({
+			kind: "resume",
+			session: undefined,
+		});
+		expect(routeSolistInteractiveInput("/resume latest", context)).toEqual({
+			kind: "resume",
+			session: "latest",
 		});
 	});
 

@@ -151,24 +151,45 @@ export async function dispatchVerification(
   }
 
   const prompt = buildVerifierPrompt(request);
-  const process = await client.spawnWorker({
-    runtimeId: selection.runtime.id,
-    prompt,
-    name: request.workerName
-  });
+  const processes: SoloWorkerProcess[] = [];
+  let todo: SoloTodo;
+  try {
+    for (const runtime of selection.selectedRuntimes) {
+      processes.push(await client.spawnWorker({
+        runtimeId: runtime.id,
+        prompt,
+        name: workerNameForRuntime(request.workerName, runtime, selection.selectedRuntimes.length)
+      }));
+    }
 
-  const todo = await client.addTodoComment(
-    request.todo.uri,
-    verificationAssignmentComment(selection.runtime, process)
-  );
+    todo = await client.addTodoComment(
+      request.todo.uri,
+      verificationAssignmentCommentForProcesses(selection.selectedRuntimes, processes)
+    );
+  } catch (error) {
+    await cleanupSpawnedWorkers(client, processes);
+    throw error;
+  }
 
   return {
     status: "spawned",
     runtime: selection.runtime,
-    process,
+    runtimes: selection.selectedRuntimes,
+    process: processes[0]!,
+    processes,
     prompt,
     todo
   };
+}
+
+async function cleanupSpawnedWorkers(
+  client: SoloWorkerClient,
+  processes: readonly SoloWorkerProcess[]
+): Promise<void> {
+  if (!client.closeWorkerProcess || processes.length === 0) {
+    return;
+  }
+  await Promise.allSettled(processes.map((process) => client.closeWorkerProcess!(process.id)));
 }
 
 export function verificationAssignmentComment(
@@ -176,6 +197,33 @@ export function verificationAssignmentComment(
   process: SoloWorkerProcess
 ): string {
   return `${VERIFICATION_ASSIGNMENT_PREFIX} role=verifier; runtime=${runtime.id} (${runtime.name}); process=${process.id} (${process.name})`;
+}
+
+export function verificationAssignmentCommentForProcesses(
+  runtimes: readonly SoloWorkerRuntime[],
+  processes: readonly SoloWorkerProcess[]
+): string {
+  if (runtimes.length === 1 && processes.length === 1) {
+    return verificationAssignmentComment(runtimes[0]!, processes[0]!);
+  }
+  const assignments = runtimes.map((runtime, index) => {
+    const process = processes[index];
+    return process
+      ? `runtime=${runtime.id} (${runtime.name}); process=${process.id} (${process.name})`
+      : `runtime=${runtime.id} (${runtime.name}); process=unknown`;
+  }).join(" | ");
+  return `${VERIFICATION_ASSIGNMENT_PREFIX} role=verifier; ${assignments}`;
+}
+
+function workerNameForRuntime(
+  baseName: string | undefined,
+  runtime: SoloWorkerRuntime,
+  count: number
+): string | undefined {
+  if (count <= 1) {
+    return baseName;
+  }
+  return `${baseName ?? "verifier"}-${runtime.id.replace(/[^a-zA-Z0-9_-]+/g, "-")}`;
 }
 
 function formatBullets(values: string[]): string[] {

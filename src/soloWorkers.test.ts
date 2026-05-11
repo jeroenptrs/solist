@@ -9,16 +9,18 @@ import {
   type SoloWorkerRuntime
 } from "./soloWorkers.js";
 import type { SoloTodo } from "./soloPlanning.js";
-import { defaultSolistConfig, setSolistRoleBinding } from "./solistConfig.js";
+import { defaultSolistConfig, setSolistRoleBinding, setSolistRoleBindings } from "./solistConfig.js";
 
 class FakeWorkerClient implements SoloWorkerClient {
   public spawnCalls: Array<{ runtimeId: string; prompt: string; name?: string }> = [];
   public commentsAdded: Array<{ uri: string; body: string }> = [];
+  public closedProcessIds: string[] = [];
 
   constructor(
     public runtimes: SoloWorkerRuntime[],
     public todo: SoloTodo,
-    private readonly process: SoloWorkerProcess = { id: "proc-1", name: "Worker 1" }
+    private readonly process: SoloWorkerProcess = { id: "proc-1", name: "Worker 1" },
+    private readonly failSpawnAt?: number
   ) {}
 
   async listWorkerRuntimes(): Promise<SoloWorkerRuntime[]> {
@@ -31,6 +33,9 @@ class FakeWorkerClient implements SoloWorkerClient {
     name?: string;
   }): Promise<SoloWorkerProcess> {
     this.spawnCalls.push(input);
+    if (this.failSpawnAt === this.spawnCalls.length) {
+      throw new Error(`spawn failed at ${this.spawnCalls.length}`);
+    }
     return this.process;
   }
 
@@ -41,6 +46,10 @@ class FakeWorkerClient implements SoloWorkerClient {
       comments: [...this.todo.comments, { body }]
     };
     return this.todo;
+  }
+
+  async closeWorkerProcess(processId: string): Promise<void> {
+    this.closedProcessIds.push(processId);
   }
 }
 
@@ -250,6 +259,81 @@ describe("Solo worker dispatch", () => {
         body: "Solist worker assignment: role=feature-worker; runtime=27 (Codex High); process=solo-process-44 (feature-worker)"
       }
     ]);
+  });
+
+  it("spawns one worker per configured agent when a role maps to multiple agents", async () => {
+    const client = new FakeWorkerClient(
+      [
+        { id: "27", name: "Codex High" },
+        { id: "31", name: "Gemini" }
+      ],
+      todo
+    );
+    const config = setSolistRoleBindings(
+      defaultSolistConfig(),
+      "reviewer",
+      [
+        { agentToolId: 27, lastKnownName: "Codex High" },
+        { agentToolId: 31, lastKnownName: "Gemini" }
+      ]
+    );
+
+    const result = await dispatchWorker(client, {
+      objective: "Review the implementation.",
+      scratchpadUri: "solo://proj/11/scratchpad/50",
+      todo,
+      role: "reviewer",
+      roleId: "reviewer",
+      lane: "review",
+      ownershipBoundaries: [],
+      whatNotToChange: [],
+      expectedHandoff: [],
+      workerName: "reviewer",
+      config
+    });
+
+    expect(result.status).toBe("spawned");
+    expect(client.spawnCalls.map((call) => call.runtimeId)).toEqual(["27", "31"]);
+    expect(client.spawnCalls.map((call) => call.name)).toEqual(["reviewer-27", "reviewer-31"]);
+    expect(client.commentsAdded[0]?.body).toContain("runtime=27 (Codex High)");
+    expect(client.commentsAdded[0]?.body).toContain("runtime=31 (Gemini)");
+  });
+
+  it("closes already spawned workers when a later multi-runtime spawn fails", async () => {
+    const client = new FakeWorkerClient(
+      [
+        { id: "27", name: "Codex High" },
+        { id: "31", name: "Gemini" }
+      ],
+      todo,
+      { id: "solo-process-27", name: "reviewer-27" },
+      2
+    );
+    const config = setSolistRoleBindings(
+      defaultSolistConfig(),
+      "reviewer",
+      [
+        { agentToolId: 27, lastKnownName: "Codex High" },
+        { agentToolId: 31, lastKnownName: "Gemini" }
+      ]
+    );
+
+    await expect(dispatchWorker(client, {
+      objective: "Review the implementation.",
+      scratchpadUri: "solo://proj/11/scratchpad/50",
+      todo,
+      role: "reviewer",
+      roleId: "reviewer",
+      lane: "review",
+      ownershipBoundaries: [],
+      whatNotToChange: [],
+      expectedHandoff: [],
+      workerName: "reviewer",
+      config
+    })).rejects.toThrow("spawn failed at 2");
+
+    expect(client.closedProcessIds).toEqual(["solo-process-27"]);
+    expect(client.commentsAdded).toEqual([]);
   });
 
   it("does not spawn or comment when runtime selection needs a decision", async () => {

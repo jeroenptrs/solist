@@ -39,6 +39,10 @@ export const SOLIST_INTERACTIVE_COMMANDS: readonly SlashCommand[] = [
 		description: "Switch a role to a Solo agent for this conversation",
 	},
 	{
+		name: "resume",
+		description: "Resume a persisted Solist conversation",
+	},
+	{
 		name: "login",
 		description: "Authenticate Solist with the pinned Codex provider",
 	},
@@ -62,7 +66,6 @@ const UNSUPPORTED_PI_COMMANDS = new Set([
 	"/fork",
 	"/clone",
 	"/tree",
-	"/resume",
 	"/reload",
 	"/compact",
 ]);
@@ -89,7 +92,9 @@ export type SolistInteractiveRoute =
 	| { kind: "render"; message: string }
 	| { kind: "mode"; mode?: string; project?: string }
 	| { kind: "roles"; action?: "list" | "doctor"; project?: string }
+	| { kind: "role-menu"; project?: string }
 	| { kind: "role"; action: "set" | "unset" | "override" | "switch"; role?: string; agent?: string; project?: string }
+	| { kind: "resume"; session?: string }
 	| { kind: "login"; provider?: string }
 	| { kind: "logout"; provider?: string }
 	| { kind: "prompt"; prompt: string };
@@ -173,6 +178,10 @@ export function routeSolistInteractiveInput(
 		return getRoleSwitchRoute(trimmed);
 	}
 
+	if (normalized === "/resume" || normalized.startsWith("/resume ")) {
+		return { kind: "resume", session: getCommandArgument(trimmed) };
+	}
+
 	if (normalized === "/login" || normalized.startsWith("/login ")) {
 		return { kind: "login", provider: getCommandArgument(trimmed) };
 	}
@@ -228,14 +237,17 @@ function getInteractiveHelpText(): string {
 		"",
 		"Solist keeps this process' conversation context in memory and uses Solo for durable plans, todos, blockers, and worker handoffs.",
 		"Use the editor for multi-line prompts: Shift+Enter, Ctrl+Enter, or Alt+Enter inserts a newline when your terminal supports it.",
-		"Use /mode for persisted mode selection, /roles or /role set for role bindings, and /role-switch for conversation-scoped role switching.",
-		"Pi session commands, model switching, import/export/share, resume/fork/tree, reload, compact, and ! shell mode are not available.",
+		"Use /mode for persisted mode selection, /roles or /role set for role bindings, /role-switch for conversation-scoped role switching, and /resume for local conversation history.",
+		"Pi session commands, model switching, import/export/share, fork/tree, reload, compact, and ! shell mode are not available.",
 	].join("\n");
 }
 
 function getRoleRoute(input: string): SolistInteractiveRoute {
 	const options = getCommandOptions(input);
 	const [action, role, ...agentParts] = options.args;
+	if (!action) {
+		return { kind: "role-menu", project: options.project };
+	}
 	if (action === "set" || action === "override" || action === "switch") {
 		return {
 			kind: "role",
