@@ -10,6 +10,7 @@ import {
 	isCliEntrypoint,
 	shouldUseLegacyWrapper,
 	shouldUseHarness,
+	SOLIST_VERSION,
 	stripRuntimeSelectorArgs,
 } from "./cli.js";
 import {
@@ -75,6 +76,11 @@ describe("Solist scaffold constants", () => {
 
 	it("keeps the help text on the combined provider/model slug", () => {
 		expect(getHelpText()).toContain("openai-codex/gpt-5.5");
+	});
+
+	it("exposes the package version for the CLI --version command", () => {
+		expect(SOLIST_VERSION).toBe("0.1.0");
+		expect(getHelpText()).toContain("solist --version");
 	});
 
 	it("documents the harness default and explicit legacy fallback in help", () => {

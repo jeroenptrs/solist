@@ -17,21 +17,22 @@ The primary goal of `solist` is to provide a safe and efficient way to leverage 
 ## Installation
 
 ```bash
-# Clone the repository and enter the directory
-cd solist
-
-# Install dependencies
-pnpm install
-
-# Build the project
-pnpm run build
+npm install -g solist
 ```
 
-To install the CLI from this checkout and run it as `solist`:
+Or with pnpm:
 
 ```bash
-pnpm add -g .
+pnpm add -g solist
 solist --help
+```
+
+For local development from a checkout:
+
+```bash
+pnpm install
+pnpm run build
+pnpm add -g .
 ```
 
 ## Usage Guide

@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.0.0 (Unreleased)
+## 0.1.0 (2026-05-11)
 
 ### Solist Rewrite Wave (WP1-WP4)
 - **Harness Spike**: Introduced the `SolistHarness` as a lightweight alternative to the legacy Pi wrapper.

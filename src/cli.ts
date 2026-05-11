@@ -79,6 +79,7 @@ export const SOLIST_HARNESS_FLAG = "--harness";
 export const SOLIST_HARNESS_ENV = "SOLIST_HARNESS";
 export const SOLIST_LEGACY_WRAPPER_FLAG = "--legacy-wrapper";
 export const SOLIST_LEGACY_WRAPPER_ENV = "SOLIST_LEGACY_WRAPPER";
+export const SOLIST_VERSION = "0.1.0";
 
 export function getHelpText(): string {
   return `solist
@@ -107,6 +108,7 @@ Usage:
                       List persisted local conversation sessions
   solist resume [latest|session-id]
                       Resume a persisted local conversation session
+  solist --version    Show the Solist version
   solist --help       Show this help
 
 Compatibility:
@@ -154,6 +156,11 @@ export async function run(): Promise<void> {
 
   if (args.includes("--help") || args.includes("-h")) {
     printHelp();
+    return;
+  }
+
+  if (args.includes("--version") || args.includes("-v")) {
+    console.log(SOLIST_VERSION);
     return;
   }
 

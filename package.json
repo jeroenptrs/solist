@@ -1,23 +1,43 @@
 {
   "name": "solist",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Solo orchestration CLI powered by Pi.",
   "type": "module",
   "packageManager": "pnpm@10.32.1",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jeroenptrs/solist.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jeroenptrs/solist/issues"
+  },
+  "homepage": "https://github.com/jeroenptrs/solist#readme",
+  "keywords": [
+    "solo",
+    "codex",
+    "orchestration",
+    "cli",
+    "agents"
+  ],
   "bin": {
-    "solist": "./dist/cli.js"
+    "solist": "dist/cli.js"
   },
   "files": [
     "dist",
     "README.md",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "LICENSE"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "pnpm run clean && tsc -p tsconfig.build.json && pnpm run chmod-bin",
+    "chmod-bin": "node -e \"require('node:fs').chmodSync('dist/cli.js', 0o755)\"",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "check": "pnpm run typecheck && pnpm test",
     "solist": "node dist/cli.js",
+    "pack:check": "npm pack --dry-run",
+    "prepublishOnly": "pnpm run check && pnpm run build",
     "prepare": "pnpm run build"
   },
   "dependencies": {
@@ -34,5 +54,9 @@
   "engines": {
     "node": ">=22"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
 }
