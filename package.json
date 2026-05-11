@@ -1,5 +1,5 @@
 {
-  "name": "solist",
+  "name": "solist-agent",
   "version": "0.1.0",
   "description": "Solo orchestration CLI powered by Pi.",
   "type": "module",
